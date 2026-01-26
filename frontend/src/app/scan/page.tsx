@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AIResponseMarkdown } from "@/components/AIResponseMarkdown";
@@ -566,7 +567,7 @@ export default function ScanPage() {
         <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
           {/* Logo and Title */}
           <div className="flex items-center justify-between py-3 sm:py-4 border-b border-slate-100">
-            <div className="flex items-center gap-3 sm:gap-4">
+            <Link href="/" className="flex items-center gap-3 sm:gap-4 hover:opacity-80 transition-opacity cursor-pointer">
               <div className="relative">
                 <div className="absolute inset-0 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl blur-lg opacity-50"></div>
                 <div className="relative flex h-10 w-10 sm:h-12 sm:w-12 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 shadow-lg">
@@ -581,7 +582,7 @@ export default function ScanPage() {
                   AI-Powered Secret Detection & Remediation
                 </p>
               </div>
-            </div>
+            </Link>
 
             {/* Feature Pills */}
             <div className="hidden lg:flex items-center gap-2">
