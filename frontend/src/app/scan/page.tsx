@@ -416,7 +416,7 @@ export default function ScanPage() {
 
       setProgress("Scanning uploaded files...");
 
-      const response = await fetch("http://localhost:8000/scan/upload", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/scan/upload`, {
         method: "POST",
         body: formData,
       });
@@ -454,7 +454,7 @@ export default function ScanPage() {
     setProgress("Cloning repository...");
 
     try {
-      const response = await fetch("http://localhost:8000/scan", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repo_url: repoUrl.trim() }),
@@ -482,7 +482,7 @@ export default function ScanPage() {
     if (!scanResult) return;
 
     try {
-      const response = await fetch("http://localhost:8000/export/json", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/json`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -509,7 +509,7 @@ export default function ScanPage() {
     if (!scanResult) return;
 
     try {
-      const response = await fetch("http://localhost:8000/export/summary", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/summary`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -607,8 +607,8 @@ export default function ScanPage() {
               <button
                 onClick={() => { setScanMode("url"); setError(""); }}
                 className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${scanMode === "url"
-                    ? "bg-white text-slate-900 shadow-sm"
-                    : "text-slate-600 hover:text-slate-900"
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
                   }`}
               >
                 <Github className="h-4 w-4" />
@@ -617,8 +617,8 @@ export default function ScanPage() {
               <button
                 onClick={() => { setScanMode("upload"); setError(""); }}
                 className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${scanMode === "upload"
-                    ? "bg-white text-slate-900 shadow-sm"
-                    : "text-slate-600 hover:text-slate-900"
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
                   }`}
               >
                 <Upload className="h-4 w-4" />
@@ -686,10 +686,10 @@ export default function ScanPage() {
                   onDragOver={handleDrag}
                   onDrop={handleDrop}
                   className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all ${dragActive
-                      ? "border-blue-500 bg-blue-50"
-                      : uploadedFile
-                        ? "border-green-400 bg-green-50"
-                        : "border-slate-300 bg-white hover:border-slate-400"
+                    ? "border-blue-500 bg-blue-50"
+                    : uploadedFile
+                      ? "border-green-400 bg-green-50"
+                      : "border-slate-300 bg-white hover:border-slate-400"
                     }`}
                 >
                   {uploadedFile ? (

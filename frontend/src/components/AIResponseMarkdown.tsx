@@ -63,19 +63,32 @@ export const AIResponseMarkdown: React.FC<AIResponseMarkdownProps> = ({ content 
         // Enhanced code blocks with syntax highlighting
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         code(props: any) {
-          const { inline, className, children } = props;
+          const { className, children, node } = props;
           const match = /language-(\w+)/.exec(className || '');
           const language = match ? match[1] : '';
 
-          return !inline ? (
+          // Check if this is an inline code element
+          // Inline code doesn't have a language class and is not inside a <pre> tag
+          const isInline = !className && node?.position?.start?.line === node?.position?.end?.line && !String(children).includes('\n');
+
+          if (isInline) {
+            return (
+              <code className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-800 font-mono text-xs">
+                {children}
+              </code>
+            );
+          }
+
+          // Block code - render with syntax highlighting
+          return (
             <div className="my-4 rounded-lg overflow-hidden shadow-md border border-slate-200">
               {/* Code block header */}
               <div className="flex items-center justify-between bg-slate-800 px-4 py-2 border-b border-slate-700">
                 <div className="flex items-center gap-2">
                   <div className="flex gap-1.5">
-                    <div className="h-2.5 w-2.5 rounded-full bg-red-500"></div>
-                    <div className="h-2.5 w-2.5 rounded-full bg-yellow-500"></div>
-                    <div className="h-2.5 w-2.5 rounded-full bg-green-500"></div>
+                    <span className="inline-block h-2.5 w-2.5 rounded-full bg-red-500"></span>
+                    <span className="inline-block h-2.5 w-2.5 rounded-full bg-yellow-500"></span>
+                    <span className="inline-block h-2.5 w-2.5 rounded-full bg-green-500"></span>
                   </div>
                   {language && (
                     <span className="text-xs font-medium text-slate-400 ml-2 uppercase">
@@ -101,12 +114,11 @@ export const AIResponseMarkdown: React.FC<AIResponseMarkdownProps> = ({ content 
                 {String(children).replace(/\n$/, '')}
               </SyntaxHighlighter>
             </div>
-          ) : (
-            <code className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-800 font-mono text-xs">
-              {children}
-            </code>
           );
         },
+
+        // Override pre to prevent nesting issues - let code handle the rendering
+        pre: ({ children }) => <>{children}</>,
 
         // Styled lists
         ul: ({ children }) => (
