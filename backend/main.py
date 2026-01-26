@@ -103,12 +103,19 @@ if frontend_url:
     else:
         origins.append(frontend_url + "/")
 
+# If no frontend URL is set in production, allow all origins (for initial setup)
+# Remove this in production once FRONTEND_URL is properly configured
+if not frontend_url and os.getenv("RENDER"):
+    origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=True if origins != ["*"] else False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 
