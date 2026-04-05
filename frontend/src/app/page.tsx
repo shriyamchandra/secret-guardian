@@ -65,9 +65,9 @@ const HeroSection = () => (
         </h1>
         <div className="max-w-3xl mx-auto">
           <p className="text-xl text-gray-600 mb-8">
-            Scan public GitHub repositories for leaked secrets and get AI-powered remediation suggestions.
+            Scan public GitHub repositories or upload ZIP files to detect leaked secrets and get AI-powered remediation suggestions.
             <span className="block mt-2 text-base text-gray-500">
-              No GitHub authentication required. No data stored. Completely free.
+              No GitHub authentication required for URL scans. ZIP uploads are supported for local or private code. No data stored. Completely free.
             </span>
           </p>
           <div className="max-w-xs mx-auto sm:max-w-none sm:flex sm:justify-center gap-4">
@@ -94,7 +94,7 @@ const HeroSection = () => (
             <div className="flex items-start gap-3">
               <AlertTriangle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
               <div className="text-left">
-                <strong>v1 Limitation:</strong> Currently only public GitHub repositories are supported.
+                <strong>v1 Limitation:</strong> Direct private GitHub repository scanning is not supported yet. Use ZIP upload for private code.
                 Private repository scanning will be available in a future release.
               </div>
             </div>
@@ -142,8 +142,8 @@ const HowItWorksSection = () => (
           <div className="flex items-center justify-center h-16 w-16 rounded-full bg-blue-100 mx-auto mb-4">
             <Github className="w-8 h-8 text-blue-600" />
           </div>
-          <h3 className="text-xl font-bold mb-2">1. Paste URL</h3>
-          <p className="text-gray-600">Enter any public GitHub repository URL.</p>
+          <h3 className="text-xl font-bold mb-2">1. Add Source</h3>
+          <p className="text-gray-600">Paste a public GitHub repository URL or upload a ZIP file.</p>
         </div>
         <div className="text-center p-6 bg-white rounded-xl shadow-md border border-gray-100">
           <div className="flex items-center justify-center h-16 w-16 rounded-full bg-blue-100 mx-auto mb-4">
@@ -264,7 +264,7 @@ const TrustSection = () => (
           <CheckCircle2 className="w-8 h-8 text-green-400 flex-shrink-0" />
           <div>
             <h4 className="font-bold">No Auth Required</h4>
-            <p className="text-sm text-slate-400">Works with public repos only</p>
+            <p className="text-sm text-slate-400">Works with public repos and ZIP uploads</p>
           </div>
         </div>
       </div>
