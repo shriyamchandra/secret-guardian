@@ -6,7 +6,7 @@ Tracks scan performance, timing, and resource usage.
 import time
 import psutil
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -64,7 +64,7 @@ class PerformanceMonitor:
     def _log_metrics(self, metrics: Dict[str, Any]) -> None:
         """Log performance metrics."""
         print(f"\n{'='*60}")
-        print(f"⏱️  SCAN PERFORMANCE METRICS")
+        print("⏱️  SCAN PERFORMANCE METRICS")
         print(f"{'='*60}")
         print(f"⏰ Duration: {metrics['duration']:.2f}s")
         print(f"📊 Findings: {metrics.get('findings', 0)}")

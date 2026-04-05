@@ -1,10 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AIResponseMarkdown } from "@/components/AIResponseMarkdown";
+import {
+  ActionStatusBanner,
+  type ActionStatus,
+} from "@/components/scan/ActionStatusBanner";
 import {
   ShieldCheck,
   Loader2,
@@ -61,7 +65,13 @@ type Finding = {
   raw_value?: string;
   scanner_source?: string;
   threat_context?: ThreatContext;
-  ai_fix?: { suggestion?: string; error?: string; threat_context?: ThreatContext };
+  ai_fix?: {
+    suggestion?: string;
+    error?: string;
+    threat_context?: ThreatContext;
+    ai_generated?: boolean;
+    ai_status?: string;
+  };
 };
 
 type ScanResult = {
@@ -73,17 +83,74 @@ type ScanResult = {
   scanners_used: string[];
   has_critical: boolean;
   has_high: boolean;
+  ai_stats?: {
+    ai_calls_made: number;
+    ai_calls_skipped: number;
+    ai_calls_deduped: number;
+    budget_limit: number;
+    circuit_broken: boolean;
+  };
 };
+
+const EMPTY_SEVERITY_BREAKDOWN: Record<Severity, number> = {
+  CRITICAL: 0,
+  HIGH: 0,
+  MEDIUM: 0,
+  LOW: 0,
+};
+
+const parseTimeoutMs = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const SCAN_REQUEST_TIMEOUT_MS = parseTimeoutMs(
+  process.env.NEXT_PUBLIC_SCAN_TIMEOUT_MS,
+  300_000
+);
+const EXPORT_REQUEST_TIMEOUT_MS = parseTimeoutMs(
+  process.env.NEXT_PUBLIC_EXPORT_TIMEOUT_MS,
+  30_000
+);
 
 // Utility functions
 const isGithubUrl = (url: string) =>
   /^https?:\/\/(www\.)?github\.com\/[\w.-]+\/[\w.-]+(\.git)?\/?$/i.test(url.trim());
 
-const maskSecret = (value: string, revealed: boolean): string => {
+const isAbortError = (e: unknown) =>
+  e instanceof DOMException && e.name === "AbortError";
+
+const getErrorMessage = (payload: unknown, fallback: string): string => {
+  if (!payload) return fallback;
+  if (typeof payload === "string") return payload;
+
+  if (typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    const detail = record.detail ?? record.message ?? record.error;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object") {
+      const nested = detail as Record<string, unknown>;
+      if (typeof nested.message === "string") return nested.message;
+      if (typeof nested.error === "string") return nested.error;
+    }
+  }
+
+  return fallback;
+};
+
+const parseEventPayload = (raw: string): Record<string, unknown> => {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+};
+
+const maskSecret = (value: string, revealed: boolean = false): string => {
   if (!value) return "";
   if (revealed) return value;
-  if (value.length <= 8) return "*".repeat(value.length);
-  return `${value.slice(0, 4)}${"*".repeat(value.length - 8)}${value.slice(-4)}`;
+  return "••••••••••••";
 };
 
 const getSeverityColor = (severity?: Severity) => {
@@ -293,6 +360,7 @@ const EducationTooltip = ({ topic }: { topic: keyof typeof educationContent }) =
 export default function ScanPage() {
   const [repoUrl, setRepoUrl] = useState("");
   const [error, setError] = useState("");
+  const [actionStatus, setActionStatus] = useState<ActionStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
@@ -302,9 +370,37 @@ export default function ScanPage() {
   const [scanMode, setScanMode] = useState<"url" | "upload">("url");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const scanAbortRef = useRef<AbortController | null>(null);
+  const scanStreamRef = useRef<EventSource | null>(null);
+  const streamFindingKeysRef = useRef<Set<string>>(new Set());
 
   const findings = useMemo(() => scanResult?.findings || [], [scanResult]);
   const totalFindings = findings.length;
+
+  useEffect(() => {
+    return () => {
+      scanAbortRef.current?.abort();
+      scanAbortRef.current = null;
+      scanStreamRef.current?.close();
+      scanStreamRef.current = null;
+    };
+  }, []);
+
+  const startTimedRequest = (timeoutMs: number) => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    return {
+      controller,
+      signal: controller.signal,
+      cancel: () => {
+        window.clearTimeout(timeoutId);
+        controller.abort();
+      },
+      clear: () => {
+        window.clearTimeout(timeoutId);
+      },
+    };
+  };
 
   // Group findings by file
   const findingsByFile = useMemo(() => {
@@ -330,6 +426,74 @@ export default function ScanPage() {
     }
     return "Scan any public GitHub repository for leaked secrets. Read-only. No data stored.";
   }, [loading, error, scanResult, totalFindings, progress, scanMode]);
+
+  const applyAiFindingUpdate = (index: number, aiFix: Finding["ai_fix"]) => {
+    if (!aiFix) return;
+    setScanResult((prev) => {
+      if (!prev || index < 0 || index >= prev.findings.length) return prev;
+      const nextFindings = [...prev.findings];
+      nextFindings[index] = {
+        ...nextFindings[index],
+        ai_fix: aiFix,
+      };
+      return {
+        ...prev,
+        findings: nextFindings,
+      };
+    });
+  };
+
+  const applyAiStatsUpdate = (aiStats: ScanResult["ai_stats"]) => {
+    if (!aiStats) return;
+    setScanResult((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        ai_stats: aiStats,
+      };
+    });
+  };
+
+  const appendStreamFinding = (finding: Finding) => {
+    const dedupeKey = `${finding.file_path}|${finding.line_number}|${finding.secret_type}`.toLowerCase();
+    if (streamFindingKeysRef.current.has(dedupeKey)) {
+      return;
+    }
+    streamFindingKeysRef.current.add(dedupeKey);
+
+    setScanResult((prev) => {
+      const nextFindings = prev ? [...prev.findings, finding] : [finding];
+      const severityBreakdown: Record<Severity, number> = { ...EMPTY_SEVERITY_BREAKDOWN };
+      for (const item of nextFindings) {
+        const severity = item.severity;
+        if (severity && severity in severityBreakdown) {
+          severityBreakdown[severity] += 1;
+        }
+      }
+
+      const filesAffected = new Set(nextFindings.map((f) => f.file_path)).size;
+      const base: ScanResult = prev ?? {
+        findings: [],
+        total_findings: 0,
+        files_affected: 0,
+        severity_breakdown: { ...EMPTY_SEVERITY_BREAKDOWN },
+        scan_duration: 0,
+        scanners_used: [],
+        has_critical: false,
+        has_high: false,
+      };
+
+      return {
+        ...base,
+        findings: nextFindings,
+        total_findings: nextFindings.length,
+        files_affected: filesAffected,
+        severity_breakdown: severityBreakdown,
+        has_critical: severityBreakdown.CRITICAL > 0,
+        has_high: severityBreakdown.HIGH > 0,
+      };
+    });
+  };
 
   const copyText = async (text: string, key: string) => {
     try {
@@ -405,37 +569,146 @@ export default function ScanPage() {
       return;
     }
 
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+    if (!apiUrl) {
+      setError("Frontend API URL is not configured. Set NEXT_PUBLIC_API_URL.");
+      return;
+    }
+
     setError("");
+    setActionStatus(null);
     setScanResult(null);
-    setRevealedSecrets(new Set());
+    streamFindingKeysRef.current = new Set();
     setLoading(true);
     setProgress("Uploading file...");
+    scanStreamRef.current?.close();
+    scanStreamRef.current = null;
+    scanAbortRef.current?.abort();
+    const request = startTimedRequest(SCAN_REQUEST_TIMEOUT_MS);
+    scanAbortRef.current = request.controller;
 
     try {
       const formData = new FormData();
       formData.append("file", uploadedFile);
 
-      setProgress("Scanning uploaded files...");
+      setProgress("Connecting upload scan stream...");
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/scan/upload`, {
+      const response = await fetch(`${apiUrl}/scan/upload/stream`, {
         method: "POST",
         body: formData,
+        signal: request.signal,
       });
-
-      setProgress("Processing scan results...");
-
-      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const detail = data?.detail;
-        const message = typeof detail === "object" ? detail.message : detail;
-        throw new Error(message || "Upload scan failed");
+        const data = await response.json().catch(() => ({}));
+        throw new Error(getErrorMessage(data, "Upload scan failed"));
+      }
+      if (!response.body) {
+        throw new Error("Upload stream is unavailable. Please retry.");
       }
 
-      setScanResult(data as ScanResult);
+      setProgress("Streaming scan updates...");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamCompleted = false;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let splitIndex = buffer.indexOf("\n\n");
+        while (splitIndex >= 0) {
+          const rawEvent = buffer.slice(0, splitIndex);
+          buffer = buffer.slice(splitIndex + 2);
+          splitIndex = buffer.indexOf("\n\n");
+
+          if (!rawEvent.trim()) {
+            continue;
+          }
+
+          let eventName = "message";
+          const dataParts: string[] = [];
+          for (const rawLine of rawEvent.split(/\r?\n/)) {
+            const line = rawLine.trimEnd();
+            if (!line || line.startsWith(":")) continue;
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataParts.push(line.slice(5).trimStart());
+            }
+          }
+          if (dataParts.length === 0) {
+            continue;
+          }
+
+          const payload = parseEventPayload(dataParts.join("\n"));
+
+          if (eventName === "progress") {
+            const message = payload.message;
+            if (typeof message === "string" && message) {
+              setProgress(message);
+            }
+            continue;
+          }
+
+          if (eventName === "scan_result") {
+            setScanResult(payload as unknown as ScanResult);
+            continue;
+          }
+
+          if (eventName === "scan_finding") {
+            const streamedFinding = payload.finding as Finding | undefined;
+            if (streamedFinding && streamedFinding.file_path) {
+              appendStreamFinding(streamedFinding);
+            }
+            continue;
+          }
+
+          if (eventName === "ai_finding") {
+            const index = Number(payload.index);
+            const aiFix = payload.ai_fix as Finding["ai_fix"] | undefined;
+            if (Number.isInteger(index) && aiFix) {
+              applyAiFindingUpdate(index, aiFix);
+            }
+            continue;
+          }
+
+          if (eventName === "ai_complete") {
+            applyAiStatsUpdate(payload.ai_stats as ScanResult["ai_stats"]);
+            continue;
+          }
+
+          if (eventName === "scan_error") {
+            const message = payload.message;
+            throw new Error(
+              typeof message === "string" && message
+                ? message
+                : "Upload scan failed."
+            );
+          }
+
+          if (eventName === "complete") {
+            streamCompleted = true;
+          }
+        }
+      }
+
+      if (!streamCompleted) {
+        throw new Error("Upload scan stream ended unexpectedly. Please retry.");
+      }
     } catch (e: unknown) {
-      const errorMessage = e instanceof Error ? e.message : "Failed to scan. Please try again.";
+      const errorMessage = isAbortError(e)
+        ? `Upload scan timed out after ${Math.ceil(SCAN_REQUEST_TIMEOUT_MS / 1000)}s. Please try a smaller ZIP or retry.`
+        : e instanceof Error
+          ? e.message
+          : "Failed to scan. Please try again.";
       setError(errorMessage);
     } finally {
+      request.clear();
+      if (scanAbortRef.current === request.controller) {
+        scanAbortRef.current = null;
+      }
       setLoading(false);
       setProgress("");
     }
@@ -443,44 +716,115 @@ export default function ScanPage() {
 
   const handleScan = async () => {
     setError("");
+    setActionStatus(null);
     setScanResult(null);
-    setRevealedSecrets(new Set());
+    streamFindingKeysRef.current = new Set();
 
     if (!isGithubUrl(repoUrl)) {
       setError("Please enter a valid GitHub repository URL (e.g., https://github.com/owner/repo)");
       return;
     }
 
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+    if (!apiUrl) {
+      setError("Frontend API URL is not configured. Set NEXT_PUBLIC_API_URL.");
+      return;
+    }
+
     setLoading(true);
-    setProgress("Cloning repository...");
+    setProgress("Connecting to scan stream...");
+    scanAbortRef.current?.abort();
+    scanAbortRef.current = null;
+    scanStreamRef.current?.close();
+    scanStreamRef.current = null;
 
-    try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/scan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_url: repoUrl.trim() }),
-      });
+    const streamUrl = `${apiUrl}/scan/stream?repo_url=${encodeURIComponent(repoUrl.trim())}`;
+    const stream = new EventSource(streamUrl);
+    scanStreamRef.current = stream;
 
-      setProgress("Processing scan results...");
-
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const detail = data && (data.detail || data.message || data.error);
-        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail) || "Request failed");
+    let completed = false;
+    const timeoutId = window.setTimeout(() => {
+      if (completed) return;
+      completed = true;
+      stream.close();
+      if (scanStreamRef.current === stream) {
+        scanStreamRef.current = null;
       }
-
-      setScanResult(data as ScanResult);
-    } catch (e: unknown) {
-      const errorMessage = e instanceof Error ? e.message : "Failed to scan. Please try again.";
-      setError(errorMessage);
-    } finally {
+      setError(
+        `Scan timed out after ${Math.ceil(SCAN_REQUEST_TIMEOUT_MS / 1000)}s. Try a smaller repository or retry.`
+      );
       setLoading(false);
       setProgress("");
-    }
+    }, SCAN_REQUEST_TIMEOUT_MS);
+
+    const finalizeStream = () => {
+      if (completed) return;
+      completed = true;
+      window.clearTimeout(timeoutId);
+      stream.close();
+      if (scanStreamRef.current === stream) {
+        scanStreamRef.current = null;
+      }
+      setLoading(false);
+      setProgress("");
+    };
+
+    stream.addEventListener("progress", (event) => {
+      const payload = parseEventPayload((event as MessageEvent).data);
+      const message = payload.message;
+      if (typeof message === "string" && message) {
+        setProgress(message);
+      }
+    });
+
+    stream.addEventListener("scan_result", (event) => {
+      const payload = parseEventPayload((event as MessageEvent).data);
+      setScanResult(payload as unknown as ScanResult);
+    });
+
+    stream.addEventListener("scan_finding", (event) => {
+      const payload = parseEventPayload((event as MessageEvent).data);
+      const streamedFinding = payload.finding as Finding | undefined;
+      if (streamedFinding && streamedFinding.file_path) {
+        appendStreamFinding(streamedFinding);
+      }
+    });
+
+    stream.addEventListener("ai_finding", (event) => {
+      const payload = parseEventPayload((event as MessageEvent).data);
+      const index = Number(payload.index);
+      const aiFix = payload.ai_fix as Finding["ai_fix"] | undefined;
+      if (!Number.isInteger(index) || !aiFix) return;
+      applyAiFindingUpdate(index, aiFix);
+    });
+
+    stream.addEventListener("ai_complete", (event) => {
+      const payload = parseEventPayload((event as MessageEvent).data);
+      applyAiStatsUpdate(payload.ai_stats as ScanResult["ai_stats"]);
+    });
+
+    stream.addEventListener("scan_error", (event) => {
+      const payload = parseEventPayload((event as MessageEvent).data);
+      const message = payload.message;
+      setError(typeof message === "string" && message ? message : "Scan failed. Please try again.");
+      finalizeStream();
+    });
+
+    stream.addEventListener("complete", () => {
+      finalizeStream();
+    });
+
+    stream.onerror = () => {
+      if (completed) return;
+      setError("Scan stream disconnected unexpectedly. Please retry.");
+      finalizeStream();
+    };
   };
 
   const exportJSON = async () => {
     if (!scanResult) return;
+    setActionStatus(null);
+    const request = startTimedRequest(EXPORT_REQUEST_TIMEOUT_MS);
 
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/json`, {
@@ -492,7 +836,12 @@ export default function ScanPage() {
           scan_duration: scanResult.scan_duration,
           severity_breakdown: scanResult.severity_breakdown,
         }),
+        signal: request.signal,
       });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => ({}));
+        throw new Error(getErrorMessage(errorPayload, "Failed to export JSON"));
+      }
 
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -501,13 +850,23 @@ export default function ScanPage() {
       a.download = `secret-guardian-report-${Date.now()}.json`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      alert("Failed to export JSON");
+      setActionStatus({ type: "success", message: "JSON report exported successfully." });
+    } catch (e: unknown) {
+      const errorMessage = isAbortError(e)
+        ? `Export timed out after ${Math.ceil(EXPORT_REQUEST_TIMEOUT_MS / 1000)}s.`
+        : e instanceof Error
+          ? e.message
+          : "Failed to export JSON";
+      setActionStatus({ type: "error", message: errorMessage });
+    } finally {
+      request.clear();
     }
   };
 
   const copySummary = async () => {
     if (!scanResult) return;
+    setActionStatus(null);
+    const request = startTimedRequest(EXPORT_REQUEST_TIMEOUT_MS);
 
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/summary`, {
@@ -519,14 +878,27 @@ export default function ScanPage() {
           scan_duration: scanResult.scan_duration,
           severity_breakdown: scanResult.severity_breakdown,
         }),
+        signal: request.signal,
       });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => ({}));
+        throw new Error(getErrorMessage(errorPayload, "Failed to copy summary"));
+      }
 
       const data = await response.json();
       await navigator.clipboard.writeText(data.summary);
       setCopiedKey("summary");
       setTimeout(() => setCopiedKey(null), 2000);
-    } catch {
-      alert("Failed to copy summary");
+      setActionStatus({ type: "success", message: "Summary copied to clipboard." });
+    } catch (e: unknown) {
+      const errorMessage = isAbortError(e)
+        ? `Copy summary timed out after ${Math.ceil(EXPORT_REQUEST_TIMEOUT_MS / 1000)}s.`
+        : e instanceof Error
+          ? e.message
+          : "Failed to copy summary";
+      setActionStatus({ type: "error", message: errorMessage });
+    } finally {
+      request.clear();
     }
   };
 
@@ -606,7 +978,15 @@ export default function ScanPage() {
             {/* Mode Toggle */}
             <div className="flex mb-4 bg-slate-100 rounded-lg p-1 max-w-xs">
               <button
-                onClick={() => { setScanMode("url"); setError(""); }}
+                onClick={() => {
+                  scanStreamRef.current?.close();
+                  scanStreamRef.current = null;
+                  setLoading(false);
+                  setProgress("");
+                  setScanMode("url");
+                  setError("");
+                  setActionStatus(null);
+                }}
                 className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${scanMode === "url"
                   ? "bg-white text-slate-900 shadow-sm"
                   : "text-slate-600 hover:text-slate-900"
@@ -616,7 +996,15 @@ export default function ScanPage() {
                 <span>GitHub URL</span>
               </button>
               <button
-                onClick={() => { setScanMode("upload"); setError(""); }}
+                onClick={() => {
+                  scanStreamRef.current?.close();
+                  scanStreamRef.current = null;
+                  setLoading(false);
+                  setProgress("");
+                  setScanMode("upload");
+                  setError("");
+                  setActionStatus(null);
+                }}
                 className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${scanMode === "upload"
                   ? "bg-white text-slate-900 shadow-sm"
                   : "text-slate-600 hover:text-slate-900"
@@ -789,6 +1177,10 @@ export default function ScanPage() {
               >
                 {headerSubtitle}
               </p>
+              <ActionStatusBanner
+                status={actionStatus}
+                onDismiss={() => setActionStatus(null)}
+              />
             </div>
           </div>
         </div>

@@ -57,9 +57,9 @@ SECRET_PATTERNS = {
     "PayPal Braintree Token": re.compile(
         r"access_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}"
     ),
-    # Heroku
+    # Heroku (requires heroku context to avoid matching random UUIDs in URLs, image names, etc.)
     "Heroku API Key": re.compile(
-        r"\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b"
+        r"(?i)(?:heroku[_\s-]*(?:api[_\s-]*)?(?:key|token)|HEROKU_API_KEY)\s*[:=]\s*['\"]?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})['\"]?"
     ),
     # Private Keys
     "RSA Private Key": re.compile(r"-----BEGIN RSA PRIVATE KEY-----"),
@@ -75,10 +75,10 @@ SECRET_PATTERNS = {
     ),
     # Generic (with high entropy check)
     "Generic API Key": re.compile(
-        r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"]([0-9a-zA-Z]{32,45})['\"]"
+        r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"]([0-9a-zA-Z\-]{32,45})['\"]"
     ),
     "Generic Secret": re.compile(
-        r"(?i)secret['\"]?\s*[:=]\s*['\"]([0-9a-zA-Z]{32,45})['\"]"
+        r"(?i)secret['\"]?\s*[:=]\s*['\"]([0-9a-zA-Z\-]{32,45})['\"]"
     ),
     "Bearer Token": re.compile(r"\b(Bearer\s+[a-zA-Z0-9\-._~+/]+=*)\b"),
 }
@@ -193,6 +193,14 @@ def is_likely_false_positive(text: str, context: str = "") -> bool:
     if any(word in text_lower for word in placeholder_words):
         return True
 
+    # Redacted/masked placeholders (common in docs and logs)
+    if re.search(r"\*{2,}", text):
+        return True
+    if re.search(r"(?i)\b(redacted|masked|hidden)\b", text_lower):
+        return True
+    if re.search(r"<[^>]{1,32}>", text) or re.search(r"\{[^}]{1,32}\}", text):
+        return True
+
     # Check if secret is pure repetition (xxx, 000, 111, abc, 123)
     if re.match(r"^(x{3,}|0{3,}|1{3,}|a{3,}|b{3,}|c{3,}|\d{3,})$", text_lower):
         return True
@@ -209,6 +217,12 @@ def is_likely_false_positive(text: str, context: str = "") -> bool:
     for pattern_str in doc_patterns:
         if re.search(pattern_str, combined):
             return True
+
+    # Explicit placeholders in context
+    if re.search(r"\*{2,}", combined):
+        return True
+    if re.search(r"(?i)(<password>|<secret>|<token>|your[_-]?(password|secret|token|key))", combined):
+        return True
 
     # Pure variable placeholders (no hardcoded values)
     # ${VAR} or {{VAR}} where the entire secret is JUST the variable
@@ -264,6 +278,8 @@ def calculate_confidence_score(
 
     # Factor 2: File context (config files = more likely real)
     file_lower = file_path.lower()
+    docs_extensions = (".md", ".markdown", ".mdx", ".rst", ".adoc", ".txt")
+    is_docs_file = file_lower.endswith(docs_extensions)
     if any(
         name in file_lower for name in [".env", "config", "secret", "credential", "key"]
     ):
@@ -273,12 +289,36 @@ def calculate_confidence_score(
         for name in ["test", "spec", "mock", "fixture", "example", "sample"]
     ):
         score *= 0.4
+    elif is_docs_file:
+        score *= 0.6
 
     # Factor 3: Check for false positive indicators
     if is_likely_false_positive(matched_text, line):
         score *= 0.3
 
-    # Factor 4: Entropy check (for generic patterns)
+    # Factor 4: Database URI realism checks (reduce docs/example noise)
+    db_secret_types = {
+        "PostgreSQL Connection",
+        "MySQL Connection",
+        "MongoDB Connection String",
+    }
+    if secret_type in db_secret_types:
+        token = matched_text.strip("`'\"")
+        # Most actionable URI leaks contain credentials (user:pass@...)
+        has_auth_segment = "@" in token and ":" in token.split("@", 1)[0]
+        has_password_query = bool(re.search(r"(?i)(password|pwd)=", token))
+        if not has_auth_segment and not has_password_query:
+            score *= 0.3
+
+        # Heavily penalize redacted/template-style URIs
+        if re.search(r"\*{2,}|<[^>]+>|\{[^}]+\}|\$\{[A-Z0-9_]+\}", token):
+            score *= 0.2
+
+        # In docs, require stronger evidence to avoid noise
+        if is_docs_file and not has_auth_segment:
+            score *= 0.5
+
+    # Factor 5: Entropy check (for generic patterns)
     if "Generic" in secret_type or "Bearer" in secret_type:
         if is_high_entropy_string(matched_text, min_length=15):
             score *= 1.2

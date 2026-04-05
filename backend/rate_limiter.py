@@ -3,11 +3,11 @@ Rate limiting system to prevent API abuse.
 Implements token bucket algorithm for smooth rate limiting.
 """
 
+import os
 import time
-from typing import Dict, Tuple
+import math
+from typing import Dict, Tuple, Optional
 from threading import Lock
-from collections import defaultdict
-
 
 class RateLimiter:
     """Token bucket rate limiter with per-IP tracking."""
@@ -24,19 +24,55 @@ class RateLimiter:
             requests_per_minute: Max requests per minute per IP
             requests_per_hour: Max requests per hour per IP
         """
-        self.requests_per_minute = requests_per_minute
-        self.requests_per_hour = requests_per_hour
+        self.requests_per_minute = int(os.getenv("RATE_LIMIT_PER_MINUTE", requests_per_minute))
+        self.requests_per_hour = int(os.getenv("RATE_LIMIT_PER_HOUR", requests_per_hour))
+        
+        self.minute_rate = self.requests_per_minute / 60.0
+        self.hour_rate = self.requests_per_hour / 3600.0
 
-        # Track requests: {ip: [(timestamp, count), ...]}
-        self._minute_buckets: Dict[str, list] = defaultdict(list)
-        self._hour_buckets: Dict[str, list] = defaultdict(list)
+        # State mapping: client_ip -> { "tokens_min": float, "tokens_hr": float, "last_refill": float }
+        self._buckets: Dict[str, Dict[str, float]] = {}
         self._lock = Lock()
+        self._max_tracked_ips = 10000
 
-    def _clean_old_requests(self, bucket: list, window_seconds: int) -> None:
-        """Remove requests outside the time window."""
-        current_time = time.time()
-        # Keep only requests within the window
-        bucket[:] = [ts for ts in bucket if current_time - ts < window_seconds]
+    def _refill_and_get(self, client_ip: str, now: float) -> Dict[str, float]:
+        """Refill tokens for the given IP and return its bucket."""
+        if client_ip not in self._buckets:
+            bucket = {
+                "tokens_min": float(self.requests_per_minute),
+                "tokens_hr": float(self.requests_per_hour),
+                "last_refill": now
+            }
+            self._buckets[client_ip] = bucket
+            return bucket
+
+        bucket = self._buckets[client_ip]
+        delta = max(0.0, now - bucket["last_refill"])
+        
+        if delta > 0:
+            bucket["tokens_min"] = min(
+                float(self.requests_per_minute), 
+                bucket["tokens_min"] + delta * self.minute_rate
+            )
+            bucket["tokens_hr"] = min(
+                float(self.requests_per_hour), 
+                bucket["tokens_hr"] + delta * self.hour_rate
+            )
+            bucket["last_refill"] = now
+            
+        return bucket
+
+    def _cleanup_idle_ips(self, now: float) -> None:
+        """Perform bounded memory cleanup to avoid unbounded map growth."""
+        if len(self._buckets) > self._max_tracked_ips:
+            # Drop IPs that haven't made a request in an hour (fully refilled anyway)
+            idle_threshold = 3600.0
+            stale_keys = [
+                ip for ip, b in self._buckets.items() 
+                if now - b["last_refill"] > idle_threshold
+            ]
+            for ip in stale_keys:
+                del self._buckets[ip]
 
     def check_rate_limit(self, client_ip: str) -> Tuple[bool, str, int]:
         """
@@ -49,38 +85,38 @@ class RateLimiter:
             Tuple of (allowed: bool, message: str, retry_after: int)
         """
         with self._lock:
-            current_time = time.time()
+            now = time.monotonic()
+            
+            # Periodically clean up memory to prevent unlimited map growth
+            self._cleanup_idle_ips(now)
 
-            # Clean old requests
-            self._clean_old_requests(self._minute_buckets[client_ip], 60)
-            self._clean_old_requests(self._hour_buckets[client_ip], 3600)
-
-            # Check minute limit
-            minute_count = len(self._minute_buckets[client_ip])
-            if minute_count >= self.requests_per_minute:
-                retry_after = 60
+            bucket = self._refill_and_get(client_ip, now)
+            
+            # Check if request can be fulfilled
+            if bucket["tokens_min"] < 1.0:
+                needed = 1.0 - bucket["tokens_min"]
+                retry_after = int(math.ceil(needed / self.minute_rate)) if self.minute_rate > 0 else 60
                 return (
                     False,
                     f"Rate limit exceeded: {self.requests_per_minute} requests/minute",
                     retry_after,
                 )
-
-            # Check hour limit
-            hour_count = len(self._hour_buckets[client_ip])
-            if hour_count >= self.requests_per_hour:
-                retry_after = 3600
+                
+            if bucket["tokens_hr"] < 1.0:
+                needed = 1.0 - bucket["tokens_hr"]
+                retry_after = int(math.ceil(needed / self.hour_rate)) if self.hour_rate > 0 else 3600
                 return (
                     False,
                     f"Rate limit exceeded: {self.requests_per_hour} requests/hour",
                     retry_after,
                 )
 
-            # Record this request
-            self._minute_buckets[client_ip].append(current_time)
-            self._hour_buckets[client_ip].append(current_time)
+            # Consume 1 token from both buckets
+            bucket["tokens_min"] -= 1.0
+            bucket["tokens_hr"] -= 1.0
 
-            remaining_minute = self.requests_per_minute - minute_count - 1
-            remaining_hour = self.requests_per_hour - hour_count - 1
+            remaining_minute = int(bucket["tokens_min"])
+            remaining_hour = int(bucket["tokens_hr"])
 
             print(
                 f"✅ Rate limit OK for {client_ip} (remaining: {remaining_minute}/min, {remaining_hour}/hour)"
@@ -103,21 +139,22 @@ class RateLimiter:
             Dictionary with usage statistics
         """
         with self._lock:
-            self._clean_old_requests(self._minute_buckets[client_ip], 60)
-            self._clean_old_requests(self._hour_buckets[client_ip], 3600)
-
+            now = time.monotonic()
+            bucket = self._refill_and_get(client_ip, now)
+            
+            remaining_minute = int(bucket["tokens_min"])
+            remaining_hour = int(bucket["tokens_hr"])
+            
             return {
-                "requests_this_minute": len(self._minute_buckets[client_ip]),
-                "requests_this_hour": len(self._hour_buckets[client_ip]),
+                "requests_this_minute": self.requests_per_minute - remaining_minute,
+                "requests_this_hour": self.requests_per_hour - remaining_hour,
                 "max_per_minute": self.requests_per_minute,
                 "max_per_hour": self.requests_per_hour,
-                "remaining_minute": self.requests_per_minute
-                - len(self._minute_buckets[client_ip]),
-                "remaining_hour": self.requests_per_hour
-                - len(self._hour_buckets[client_ip]),
+                "remaining_minute": remaining_minute,
+                "remaining_hour": remaining_hour,
             }
 
-    def reset(self, client_ip: str = None) -> None:
+    def reset(self, client_ip: Optional[str] = None) -> None:
         """
         Reset rate limits.
 
@@ -126,12 +163,11 @@ class RateLimiter:
         """
         with self._lock:
             if client_ip:
-                self._minute_buckets[client_ip].clear()
-                self._hour_buckets[client_ip].clear()
+                if client_ip in self._buckets:
+                    del self._buckets[client_ip]
                 print(f"🔄 Reset rate limit for {client_ip}")
             else:
-                self._minute_buckets.clear()
-                self._hour_buckets.clear()
+                self._buckets.clear()
                 print("🔄 Reset all rate limits")
 
 

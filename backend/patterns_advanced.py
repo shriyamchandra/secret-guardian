@@ -65,16 +65,16 @@ SECRET_PATTERNS: Dict[str, Pattern] = {
     "PayPal Braintree Access Token": re.compile(
         r"access_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}"
     ),
-    # Heroku
+    # Heroku (requires heroku context to avoid matching random UUIDs)
     "Heroku API Key": re.compile(
-        r"\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b"
+        r"(?i)(?:heroku[_\s-]*(?:api[_\s-]*)?(?:key|token)|HEROKU_API_KEY)\s*[:=]\s*['\"]?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})['\"]?"
     ),
     # Generic Patterns
     "Generic API Key": re.compile(
-        r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"]([0-9a-zA-Z]{32,45})['\"]"
+        r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"]([0-9a-zA-Z\-]{32,45})['\"]"
     ),
     "Generic Secret": re.compile(
-        r"(?i)secret['\"]?\s*[:=]\s*['\"]([0-9a-zA-Z]{32,45})['\"]"
+        r"(?i)secret['\"]?\s*[:=]\s*['\"]([0-9a-zA-Z\-]{32,45})['\"]"
     ),
     "Bearer Token": re.compile(r"\b(Bearer\s+[a-zA-Z0-9\-._~+/]+=*)\b"),
     # Private Keys
@@ -269,16 +269,16 @@ def calculate_confidence_score(
 for secret_type, pattern in SECRET_PATTERNS.items():
     if match := pattern.search(line):
         matched_text = match.group(1) if match.groups() else match.group(0)
-        
+
         # Calculate confidence
         confidence_level, confidence_score = calculate_confidence_score(
             secret_type, matched_text, line, file_path
         )
-        
+
         # Skip low-confidence findings (reduce noise)
         if confidence_level == "LOW":
             continue
-        
+
         findings.append({
             "file_path": file_path,
             "secret_type": secret_type,

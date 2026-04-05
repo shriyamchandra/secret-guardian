@@ -12,7 +12,6 @@ import os
 import json
 import subprocess
 import tempfile
-import shutil
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -192,7 +191,10 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
         return []
 
     findings: List[Finding] = []
-    report_path = tempfile.mktemp(suffix=".json")
+    
+    # Securely create a temp file to avoid TOCTOU races, and close handle for external write
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tf:
+        report_path = tf.name
 
     try:
         cmd = [
@@ -207,7 +209,7 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
             "--no-git",  # Scan files, not git history
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
         # Gitleaks returns exit code 1 when secrets are found
         if os.path.exists(report_path):
@@ -231,13 +233,13 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
                     line_number=item.get("StartLine", 0),
                     confidence="HIGH",  # Gitleaks has strong patterns
                     entropy=round(entropy, 2),
-                    raw_value=mask_secret(secret),
+                    raw_value=secret,
                     severity=severity,
                     scanner_source="gitleaks",
                     description=item.get("Description", ""),
                     commit_hash=item.get("Commit", None),
                     author=item.get("Author", None),
-                    leaked_line=item.get("Match", ""),
+                    leaked_line=mask_secret(item.get("Match", "")),
                 )
                 findings.append(finding)
                 print(
@@ -249,8 +251,11 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
     except Exception as e:
         print(f"⚠️ Gitleaks error: {e}")
     finally:
-        if os.path.exists(report_path):
-            os.remove(report_path)
+        if report_path and os.path.exists(report_path):
+            try:
+                os.remove(report_path)
+            except OSError as e:
+                print(f"⚠️ Could not remove temporary Gitleaks report {report_path}: {e}")
 
     return findings
 
@@ -295,7 +300,6 @@ def run_trufflehog(repo_path: str, timeout: int = 120) -> List[Finding]:
                 source_metadata = (
                     item.get("SourceMetadata", {}).get("Data", {}).get("Filesystem", {})
                 )
-                extra_data = item.get("ExtraData", {})
 
                 from patterns import calculate_shannon_entropy
 
@@ -311,11 +315,11 @@ def run_trufflehog(repo_path: str, timeout: int = 120) -> List[Finding]:
                     line_number=source_metadata.get("line", 0),
                     confidence="HIGH",
                     entropy=round(entropy, 2),
-                    raw_value=mask_secret(secret),
+                    raw_value=secret,
                     severity=severity,
                     scanner_source="trufflehog",
                     description=item.get("DecoderName", ""),
-                    leaked_line=secret[:100] + "..." if len(secret) > 100 else secret,
+                    leaked_line=mask_secret(secret),
                 )
                 findings.append(finding)
                 print(

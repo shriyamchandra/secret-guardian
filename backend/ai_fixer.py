@@ -15,7 +15,9 @@ CRITICAL: Context-aware threat modeling to distinguish between:
 
 import os
 import re
-from typing import Dict, Any, Tuple
+import copy
+import hashlib
+from typing import Dict, Any, List, Optional, Callable
 
 from dotenv import load_dotenv
 
@@ -33,6 +35,7 @@ except Exception:
 
 
 API_KEY = os.getenv("GOOGLE_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 
 # ==============================================================================
@@ -101,8 +104,6 @@ class ThreatContext:
         r"^replace[_\-]?",
         r"^enter[_\-]?",
         r"<.*>",
-        r"\$\{.*\}",
-        r"\{\{.*\}\}",
         r"%.*%",
         r"^sk[_\-]?test",
         r"^pk[_\-]?test",  # Stripe test keys
@@ -177,7 +178,7 @@ def analyze_threat_context(finding: Dict[str, Any]) -> Dict[str, Any]:
     for pattern in ThreatContext.TEST_FILE_PATTERNS:
         if re.search(pattern, file_path, re.IGNORECASE):
             mitigating_factors.append(f"File appears to be test/example: '{pattern}'")
-            context_notes.append(f"📁 File path suggests test/example file")
+            context_notes.append("📁 File path suggests test/example file")
             break
 
     # === Check for placeholder values ===
@@ -185,9 +186,31 @@ def analyze_threat_context(finding: Dict[str, Any]) -> Dict[str, Any]:
         if re.search(pattern, code_snippet, re.IGNORECASE):
             mitigating_factors.append(f"Value appears to be placeholder: '{pattern}'")
             context_notes.append(
-                f"📝 Value appears to be a placeholder, not a real secret"
+                "📝 Value appears to be a placeholder, not a real secret"
             )
             break
+
+    # === Advanced Variable Template Logic ===
+    if re.search(r"=['\"]?(?:\$\{[A-Za-z0-9_]+\}|\{\{[A-Za-z0-9_]+\}\})['\"]?(\s|$)", code_snippet, re.IGNORECASE):
+        mitigating_factors.append("Value is purely a templated environment variable")
+        context_notes.append("📝 Value is a pure environment variable placeholder (e.g., ${VAR})")
+    else:
+        # Check for ${VAR:default_value} fallback leaks
+        default_match = re.search(r"\$\{[A-Za-z0-9_]+:([^}]+)\}", code_snippet)
+        if default_match:
+            default_val = default_match.group(1).strip()
+            from patterns import calculate_shannon_entropy
+            default_entropy = calculate_shannon_entropy(default_val)
+            
+            is_dummy = any(re.search(p, default_val, re.IGNORECASE) for p in ThreatContext.DEV_INDICATORS)
+            is_placeholder = any(re.search(p, default_val, re.IGNORECASE) for p in ThreatContext.PLACEHOLDER_PATTERNS)
+            
+            if (default_entropy > 3.5 or len(default_val) > 15) and not is_dummy and not is_placeholder and ' ' not in default_val:
+                risk_factors.append("Template default value appears to be a real, exploitable secret")
+                context_notes.append("⚠️ Environment variable template falls back to a seemingly genuine secret!")
+            else:
+                mitigating_factors.append(f"Template default '{default_val}' appears to be local/dev boilerplate")
+                context_notes.append("📝 Template fallback value is safe boilerplate")
 
     # === Check for high-exploitability secret types ===
     for stype in ThreatContext.HIGH_EXPLOITABILITY_TYPES:
@@ -417,7 +440,6 @@ def get_gemini_fix(finding: Dict[str, Any]) -> Dict[str, Any]:
     code_snippet = finding.get("code_snippet", finding.get("leaked_line", ""))
     line_number = finding.get("line_number", 0)
     file_path = finding.get("file_path", "")
-    severity = finding.get("severity", "HIGH")
     entropy = finding.get("entropy", 0)
 
     # === CONTEXT-AWARE THREAT MODELING ===
@@ -543,7 +565,7 @@ Keep the response professional, concise, and appropriately calibrated to the act
     try:
         client = genai.Client(api_key=API_KEY)
         response = client.models.generate_content(
-            model="gemini-2.0-flash-exp",
+            model=GEMINI_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.3,
@@ -560,4 +582,240 @@ Keep the response professional, concise, and appropriately calibrated to the act
         }
     except Exception as e:
         print(f"Error calling Gemini API: {e}")
-        return {"error": f"Failed to get Gemini suggestion: {e}"}
+        error_text = str(e).lower()
+        is_terminal = any(
+            k in error_text
+            for k in [
+                "429",
+                "quota",
+                "rate limit",
+                "503",
+                "unavailable",
+                "404",
+                "not_found",
+                "not found",
+                "model",
+                "unsupported",
+                "permission denied",
+                "401",
+                "403",
+                "api key",
+            ]
+        )
+        return {
+            "error": f"Failed to get Gemini suggestion: {e}",
+            "_terminal_error": is_terminal,
+        }
+
+
+# ==============================================================================
+# SMART AI ORCHESTRATOR
+# ==============================================================================
+
+# Per-scan budget (configurable via env)
+MAX_AI_CALLS_PER_SCAN = int(os.getenv("MAX_AI_CALLS_PER_SCAN", "5"))
+AI_CALL_TIMEOUT = int(os.getenv("AI_CALL_TIMEOUT", "30"))
+
+
+def _finding_dedup_key(f: Dict[str, Any]) -> str:
+    """Produce a stable key so identical secret+context findings share one AI call."""
+    secret_value = (
+        f.get("raw_value")
+        or f.get("detected_value")
+        or f.get("masked_value")
+        or ""
+    )
+    normalized_secret = re.sub(r"\s+", "", str(secret_value).lower())
+    if not normalized_secret:
+        fallback_text = f.get("code_snippet", f.get("leaked_line", ""))
+        normalized_secret = re.sub(r"\s+", " ", str(fallback_text).strip().lower())
+
+    ctx = f.get("threat_context", {})
+    parts = [
+        f.get("secret_type", ""),
+        ctx.get("exploitability", ""),
+        normalized_secret,
+    ]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
+def _is_medium_ambiguous(finding: Dict[str, Any]) -> bool:
+    """
+    MEDIUM findings should only call AI when deterministic logic is uncertain.
+    """
+    ctx = finding.get("threat_context", {})
+    if not ctx:
+        return True
+
+    confidence = float(ctx.get("confidence", 0.0))
+    risk_factors = ctx.get("risk_factors", []) or []
+    mitigating_factors = ctx.get("mitigating_factors", []) or []
+    exploitability = ctx.get("exploitability", "")
+
+    if exploitability == "LIKELY_FALSE_POSITIVE":
+        return False
+
+    # Ambiguous if we have mixed signals or low confidence.
+    return (len(risk_factors) > 0 and len(mitigating_factors) > 0) or confidence < 0.65
+
+
+def should_call_ai(finding: Dict[str, Any]) -> bool:
+    """Decide whether a finding warrants an AI call based on recalibrated severity and threat context."""
+    sev = finding.get("severity", "HIGH")
+
+    # Always call for CRITICAL/HIGH
+    if sev in ("CRITICAL", "HIGH"):
+        return True
+
+    # MEDIUM only if deterministic analysis is ambiguous
+    if sev == "MEDIUM":
+        return _is_medium_ambiguous(finding)
+
+    # LOW or false-positive: skip AI
+    return False
+
+
+def _deterministic_fallback(finding: Dict[str, Any]) -> Dict[str, Any]:
+    """Provide a lightweight, deterministic remediation when AI is skipped or unavailable."""
+    ctx = finding.get("threat_context", {})
+    exp = ctx.get("exploitability", "BAD_PRACTICE")
+    action = ctx.get("recommended_action", "REVIEW")
+    notes = ctx.get("context_notes", [])
+
+    if exp == "LIKELY_FALSE_POSITIVE":
+        summary = "This finding appears to be a placeholder or example value. Verify it is not a real secret."
+    elif exp == "BAD_PRACTICE":
+        summary = "This is a security anti-pattern. Move the value to environment variables even in development."
+    else:
+        summary = "This secret should be rotated immediately, then moved to a secret manager."
+
+    framework = detect_framework(finding)
+    advice = get_framework_specific_advice(framework, finding.get("secret_type", ""))
+
+    return {
+        "suggestion": f"## 🎯 Risk Assessment\n{summary}\n\n"
+                      f"## 📋 Recommended Action\n**{action.replace('_', ' ').title()}**\n\n"
+                      f"## 🏗️ Framework Guidance\n{advice.strip()}\n",
+        "threat_context": ctx,
+        "ai_generated": False,
+    }
+
+
+async def run_ai_remediation(
+    findings: List[Dict[str, Any]],
+    on_finding_processed: Optional[Callable[[int, Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    """
+    Orchestrate AI calls across a list of findings with:
+    - Severity gating (skip LOW / false positives)
+    - Deduplication (same secret+context → one call)
+    - Per-scan budget cap
+    - Circuit-breaker on quota/model errors
+    """
+    import asyncio
+    budget_remaining = MAX_AI_CALLS_PER_SCAN
+    circuit_broken = False
+    dedup_cache: Dict[str, Dict[str, Any]] = {}
+    ai_calls_made = 0
+    ai_calls_skipped = 0
+    ai_calls_deduped = 0
+
+    def notify_processed(index: int, finding: Dict[str, Any]) -> None:
+        if not on_finding_processed:
+            return
+        try:
+            on_finding_processed(index, finding)
+        except Exception as cb_exc:
+            print(f"⚠️ AI progress callback failed at index {index}: {cb_exc}")
+
+    for index, f in enumerate(findings):
+        needs_ai = should_call_ai(f)
+        key = f"{_finding_dedup_key(f)}|needs_ai:{int(needs_ai)}"
+
+        # 1. Check dedup cache
+        if key in dedup_cache:
+            cached = copy.deepcopy(dedup_cache[key])
+            cached["ai_status"] = "deduped"
+            f["ai_fix"] = cached
+            ai_calls_deduped += 1
+            notify_processed(index, f)
+            continue
+
+        # 2. Severity gate
+        if not needs_ai:
+            fallback = _deterministic_fallback(f)
+            fallback["ai_status"] = "skipped_low_risk"
+            f["ai_fix"] = fallback
+            dedup_cache[key] = fallback
+            ai_calls_skipped += 1
+            notify_processed(index, f)
+            continue
+
+        # 3. Budget check
+        if budget_remaining <= 0 or circuit_broken:
+            fallback = _deterministic_fallback(f)
+            fallback["ai_status"] = "budget_exhausted" if not circuit_broken else "circuit_broken"
+            f["ai_fix"] = fallback
+            dedup_cache[key] = fallback
+            ai_calls_skipped += 1
+            notify_processed(index, f)
+            continue
+
+        # 4. Make AI call with timeout
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(get_gemini_fix, f),
+                timeout=AI_CALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            result = {"error": f"AI call timed out after {AI_CALL_TIMEOUT}s"}
+        except Exception as exc:
+            result = {"error": f"AI call failed: {exc}"}
+
+        # 5. Check for quota/model errors → circuit break
+        if result.get("_terminal_error") or any(
+            k in str(result.get("error", "")).lower()
+            for k in [
+                "429",
+                "quota",
+                "rate limit",
+                "503",
+                "unavailable",
+                "404",
+                "not_found",
+                "not found",
+                "model",
+                "unsupported",
+                "401",
+                "403",
+                "api key",
+            ]
+        ):
+            print("⚡ AI quota/model error detected — circuit-breaking remaining AI calls for this scan.")
+            circuit_broken = True
+            fallback = _deterministic_fallback(f)
+            fallback["ai_status"] = "circuit_broken"
+            f["ai_fix"] = fallback
+            dedup_cache[key] = fallback
+            ai_calls_skipped += 1
+            notify_processed(index, f)
+            continue
+
+        # Clean internal flag
+        result.pop("_terminal_error", None)
+        result["ai_status"] = "success" if "suggestion" in result else "error"
+        result["ai_generated"] = "suggestion" in result
+
+        f["ai_fix"] = result
+        dedup_cache[key] = result
+        ai_calls_made += 1
+        budget_remaining -= 1
+        notify_processed(index, f)
+
+    return {
+        "ai_calls_made": ai_calls_made,
+        "ai_calls_skipped": ai_calls_skipped,
+        "ai_calls_deduped": ai_calls_deduped,
+        "budget_limit": MAX_AI_CALLS_PER_SCAN,
+        "circuit_broken": circuit_broken,
+    }
