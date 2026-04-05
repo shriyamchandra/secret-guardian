@@ -715,10 +715,18 @@ export default function ScanPage() {
   };
 
   const handleScan = async () => {
+    // Stop any previous in-flight scan stream before starting validation/new scan.
+    scanAbortRef.current?.abort();
+    scanAbortRef.current = null;
+    scanStreamRef.current?.close();
+    scanStreamRef.current = null;
+
     setError("");
     setActionStatus(null);
     setScanResult(null);
     streamFindingKeysRef.current = new Set();
+    setLoading(false);
+    setProgress("");
 
     if (!isGithubUrl(repoUrl)) {
       setError("Please enter a valid GitHub repository URL (e.g., https://github.com/owner/repo)");
@@ -733,16 +741,13 @@ export default function ScanPage() {
 
     setLoading(true);
     setProgress("Connecting to scan stream...");
-    scanAbortRef.current?.abort();
-    scanAbortRef.current = null;
-    scanStreamRef.current?.close();
-    scanStreamRef.current = null;
 
     const streamUrl = `${apiUrl}/scan/stream?repo_url=${encodeURIComponent(repoUrl.trim())}`;
     const stream = new EventSource(streamUrl);
     scanStreamRef.current = stream;
 
     let completed = false;
+    const isActiveStream = () => scanStreamRef.current === stream && !completed;
     const timeoutId = window.setTimeout(() => {
       if (completed) return;
       completed = true;
@@ -770,6 +775,7 @@ export default function ScanPage() {
     };
 
     stream.addEventListener("progress", (event) => {
+      if (!isActiveStream()) return;
       const payload = parseEventPayload((event as MessageEvent).data);
       const message = payload.message;
       if (typeof message === "string" && message) {
@@ -778,11 +784,13 @@ export default function ScanPage() {
     });
 
     stream.addEventListener("scan_result", (event) => {
+      if (!isActiveStream()) return;
       const payload = parseEventPayload((event as MessageEvent).data);
       setScanResult(payload as unknown as ScanResult);
     });
 
     stream.addEventListener("scan_finding", (event) => {
+      if (!isActiveStream()) return;
       const payload = parseEventPayload((event as MessageEvent).data);
       const streamedFinding = payload.finding as Finding | undefined;
       if (streamedFinding && streamedFinding.file_path) {
@@ -791,6 +799,7 @@ export default function ScanPage() {
     });
 
     stream.addEventListener("ai_finding", (event) => {
+      if (!isActiveStream()) return;
       const payload = parseEventPayload((event as MessageEvent).data);
       const index = Number(payload.index);
       const aiFix = payload.ai_fix as Finding["ai_fix"] | undefined;
@@ -799,11 +808,13 @@ export default function ScanPage() {
     });
 
     stream.addEventListener("ai_complete", (event) => {
+      if (!isActiveStream()) return;
       const payload = parseEventPayload((event as MessageEvent).data);
       applyAiStatsUpdate(payload.ai_stats as ScanResult["ai_stats"]);
     });
 
     stream.addEventListener("scan_error", (event) => {
+      if (!isActiveStream()) return;
       const payload = parseEventPayload((event as MessageEvent).data);
       const message = payload.message;
       setError(typeof message === "string" && message ? message : "Scan failed. Please try again.");
@@ -811,11 +822,12 @@ export default function ScanPage() {
     });
 
     stream.addEventListener("complete", () => {
+      if (!isActiveStream()) return;
       finalizeStream();
     });
 
     stream.onerror = () => {
-      if (completed) return;
+      if (!isActiveStream()) return;
       setError("Scan stream disconnected unexpectedly. Please retry.");
       finalizeStream();
     };
@@ -1164,19 +1176,21 @@ export default function ScanPage() {
             )}
 
             {/* Status Message */}
-            <div className="mt-3">
-              <p
-                className={`text-sm font-medium transition-all duration-300 ${error
+            <div className="mt-3 min-h-[1.5rem]">
+              {!error && (
+                <p
+                  className={`text-sm font-medium leading-6 break-words transition-colors duration-200 ${error
                   ? "text-red-600"
                   : loading
                     ? "text-blue-600 animate-pulse"
                     : scanResult?.has_critical || scanResult?.has_high
                       ? "text-red-600"
                       : "text-slate-600"
-                  }`}
-              >
-                {headerSubtitle}
-              </p>
+                    }`}
+                >
+                  {headerSubtitle}
+                </p>
+              )}
               <ActionStatusBanner
                 status={actionStatus}
                 onDismiss={() => setActionStatus(null)}
