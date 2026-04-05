@@ -12,7 +12,7 @@ SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 def format_sse(event: str, payload: Dict[str, Any]) -> str:
     """Format a Server-Sent Event payload."""
-    return f"event: {event}\\ndata: {json.dumps(payload)}\\n\\n"
+    return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
 
 
 def normalize_callback_finding(finding_obj: Any) -> Dict[str, Any]:
