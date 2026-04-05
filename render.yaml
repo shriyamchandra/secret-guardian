@@ -9,7 +9,7 @@ services:
     plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: python -m uvicorn main:app --host 0.0.0.0 --port $PORT --loop asyncio
     envVars:
       - key: PYTHON_VERSION
         value: "3.12"
@@ -17,5 +17,5 @@ services:
         sync: false  # Set this manually in Render dashboard
       - key: FRONTEND_URL
         sync: false  # Set to your Vercel frontend URL
-    healthCheckPath: /
+    healthCheckPath: /health
     autoDeploy: true
