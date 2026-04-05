@@ -15,7 +15,7 @@ import os
 import shutil
 import tempfile
 import time
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from git import Repo
@@ -198,7 +198,38 @@ def should_skip_file(file_path: str, filename: str) -> bool:
     return False
 
 
-def run_regex_scanner(repo_path: str) -> List[Finding]:
+def has_real_google_service_account_context(lines: List[str], match_index: int) -> bool:
+    """
+    Validate that a service-account match has nearby fields from a real key file.
+
+    This avoids flagging placeholder snippets that only include:
+    `"type": "service_account"`.
+    """
+    context_window = 25
+    start = max(0, match_index - context_window)
+    end = min(len(lines), match_index + context_window + 1)
+    context = "".join(lines[start:end]).lower()
+
+    required_markers = ['"client_email"', '"private_key"']
+    if not all(marker in context for marker in required_markers):
+        return False
+
+    if ".gserviceaccount.com" not in context:
+        return False
+
+    if "-----begin private key-----" not in context:
+        return False
+
+    if any(marker in context for marker in ["placeholder", "example", "sample", "your_"]):
+        return False
+
+    return True
+
+
+def run_regex_scanner(
+    repo_path: str,
+    on_finding: Optional[Callable[[Finding], None]] = None,
+) -> List[Finding]:
     """
     Run the built-in regex-based scanner.
 
@@ -236,6 +267,12 @@ def run_regex_scanner(repo_path: str) -> List[Finding]:
                 for i, line in enumerate(lines):
                     for secret_type, pattern in SECRET_PATTERNS.items():
                         if match := pattern.search(line):
+                            if (
+                                secret_type == "Google Cloud Service Account"
+                                and not has_real_google_service_account_context(lines, i)
+                            ):
+                                continue
+
                             matched_text = (
                                 match.group(1) if match.groups() else match.group(0)
                             )
@@ -258,20 +295,31 @@ def run_regex_scanner(repo_path: str) -> List[Finding]:
                                 secret_type, confidence_level, entropy
                             )
 
+                            # Zero-trust: mask the secret in display fields (code_snippet, leaked_line)
+                            # but keep raw_value unmasked so the frontend Reveal button can show it
+                            masked = mask_secret(matched_text)
+                            safe_snippet = code_snippet.replace(matched_text, masked)
+                            safe_line = line.strip().replace(matched_text, masked)
+
                             finding = Finding(
                                 secret_type=secret_type,
                                 file_path=rel_path,
                                 line_number=i + 1,
                                 confidence=confidence_level,
                                 entropy=round(entropy, 2),
-                                raw_value=mask_secret(matched_text),
+                                raw_value=matched_text,
                                 severity=severity,
                                 scanner_source="regex",
                                 language=language,
-                                code_snippet=code_snippet,
-                                leaked_line=line.strip(),
+                                code_snippet=safe_snippet,
+                                leaked_line=safe_line,
                             )
                             findings.append(finding)
+                            if on_finding:
+                                try:
+                                    on_finding(finding)
+                                except Exception as cb_exc:
+                                    print(f"⚠️ Regex finding callback failed: {cb_exc}")
                             print(
                                 f"✅ [Regex] Found {secret_type} in {rel_path}:{i + 1} "
                                 f"[{confidence_level}, entropy: {entropy:.2f}]"
@@ -316,6 +364,8 @@ def scan_repo(
     repo_url: str,
     timeout: int = DEFAULT_SCAN_TIMEOUT,
     use_external_scanners: bool = True,
+    on_finding: Optional[Callable[[Finding], None]] = None,
+    on_progress: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
     """
     Clone a repository and scan for secrets.
@@ -340,6 +390,11 @@ def scan_repo(
 
     try:
         clone_timeout = min(120, timeout // 3)
+        if on_progress:
+            try:
+                on_progress("clone", "Cloning repository...")
+            except Exception as cb_exc:
+                print(f"⚠️ Scan progress callback failed: {cb_exc}")
         if not clone_repository(repo_url, temp_dir, clone_timeout):
             return {
                 "error": "Failed to clone repository. Please check the URL and ensure it's a public repository.",
@@ -354,6 +409,8 @@ def scan_repo(
             timeout=int(remaining_timeout),
             use_external_scanners=use_external_scanners,
             start_time=start_time,
+            on_finding=on_finding,
+            on_progress=on_progress,
         )
 
     except Exception as e:
@@ -381,6 +438,8 @@ def scan_directory(
     use_external_scanners: bool = True,
     start_time: float = None,
     cleanup: bool = False,
+    on_finding: Optional[Callable[[Finding], None]] = None,
+    on_progress: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
     """
     Scan an existing directory for secrets.
@@ -406,29 +465,56 @@ def scan_directory(
     try:
         scanner_timeout = timeout // 3
 
+        if on_progress:
+            try:
+                on_progress("regex", "Running regex scanner...")
+            except Exception as cb_exc:
+                print(f"⚠️ Scan progress callback failed: {cb_exc}")
         print("🔍 Running regex scanner...")
         scanners_used.append("regex")
-        regex_findings = run_regex_scanner(directory_path)
+        regex_findings = run_regex_scanner(directory_path, on_finding=on_finding)
         all_findings.extend(regex_findings)
 
         if use_external_scanners:
             scanner_status = get_scanner_status()
 
             if scanner_status.get("gitleaks"):
+                if on_progress:
+                    try:
+                        on_progress("gitleaks", "Running Gitleaks scanner...")
+                    except Exception as cb_exc:
+                        print(f"⚠️ Scan progress callback failed: {cb_exc}")
                 print("🔍 Running Gitleaks scanner...")
                 scanners_used.append("gitleaks")
                 gitleaks_findings = run_gitleaks(
                     directory_path, timeout=int(scanner_timeout)
                 )
                 all_findings.extend(gitleaks_findings)
+                if on_finding:
+                    for finding in gitleaks_findings:
+                        try:
+                            on_finding(finding)
+                        except Exception as cb_exc:
+                            print(f"⚠️ Gitleaks finding callback failed: {cb_exc}")
 
             if scanner_status.get("trufflehog"):
+                if on_progress:
+                    try:
+                        on_progress("trufflehog", "Running TruffleHog scanner...")
+                    except Exception as cb_exc:
+                        print(f"⚠️ Scan progress callback failed: {cb_exc}")
                 print("🔍 Running TruffleHog scanner...")
                 scanners_used.append("trufflehog")
                 trufflehog_findings = run_trufflehog(
                     directory_path, timeout=int(scanner_timeout)
                 )
                 all_findings.extend(trufflehog_findings)
+                if on_finding:
+                    for finding in trufflehog_findings:
+                        try:
+                            on_finding(finding)
+                        except Exception as cb_exc:
+                            print(f"⚠️ TruffleHog finding callback failed: {cb_exc}")
 
         print(f"🔄 Deduplicating {len(all_findings)} findings...")
         deduplicated = deduplicate_findings(all_findings)
