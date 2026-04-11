@@ -21,7 +21,14 @@ try:
         recalibrate_finding,
     )
     from ..services.zip_security import MAX_UPLOAD_SIZE, safe_extract_zip
-    from .scan_shared import default_ai_meta, enforce_rate_limit, resolve_scan_path
+    from .scan_shared import (
+        MAX_STREAM_FINDINGS_EMITTED,
+        apply_finding_aggregation,
+        apply_findings_limit,
+        default_ai_meta,
+        enforce_rate_limit,
+        resolve_scan_path,
+    )
 except Exception:
     from ai_fixer import run_ai_remediation  # type: ignore
     from scanner import scan_directory  # type: ignore
@@ -33,6 +40,9 @@ except Exception:
     )
     from services.zip_security import MAX_UPLOAD_SIZE, safe_extract_zip  # type: ignore
     from api.scan_shared import (  # type: ignore
+        MAX_STREAM_FINDINGS_EMITTED,
+        apply_finding_aggregation,
+        apply_findings_limit,
         default_ai_meta,
         enforce_rate_limit,
         resolve_scan_path,
@@ -135,6 +145,7 @@ async def scan_uploaded_file(
                 },
             )
 
+        results = apply_finding_aggregation(results)
         findings = results.get("findings", [])
         if findings:
             severity_breakdown = recalibrate_and_sort_findings(findings)
@@ -142,6 +153,14 @@ async def scan_uploaded_file(
             results["severity_breakdown"] = severity_breakdown
             results["has_critical"] = severity_breakdown["CRITICAL"] > 0
             results["has_high"] = severity_breakdown["HIGH"] > 0
+
+        results = apply_findings_limit(results)
+        findings = results.get("findings", [])
+        if results.get("findings_truncated"):
+            print(
+                "⚠️ Upload findings payload capped to "
+                f"{results.get('displayed_findings')} of {results.get('total_findings')}"
+            )
 
         ai_meta = default_ai_meta()
         if findings:
@@ -204,6 +223,8 @@ async def stream_uploaded_file_scan(
 
     async def producer() -> None:
         nonlocal temp_dir, file_size
+        stream_findings_emitted = 0
+        stream_limit_notified = False
         try:
             client_ip = request.client.host if request.client else "unknown"
             allowed, message, retry_after = enforce_rate_limit_stream(client_ip)
@@ -246,13 +267,19 @@ async def stream_uploaded_file_scan(
                 emit("scan_error", {"message": "The uploaded file is empty."})
                 return
 
-            emit("progress", {"stage": "extract", "message": "Extracting ZIP securely..."})
+            emit(
+                "progress",
+                {"stage": "extract", "message": "Extracting ZIP securely..."},
+            )
             temp_dir = tempfile.mkdtemp(prefix="secret-guardian-upload-stream-")
             try:
                 with zipfile.ZipFile(io.BytesIO(contents), "r") as zip_ref:
                     safe_extract_zip(zip_ref, temp_dir)
             except zipfile.BadZipFile:
-                emit("scan_error", {"message": "The uploaded file is not a valid ZIP archive."})
+                emit(
+                    "scan_error",
+                    {"message": "The uploaded file is not a valid ZIP archive."},
+                )
                 return
 
             scan_path = resolve_scan_path(temp_dir)
@@ -266,11 +293,27 @@ async def stream_uploaded_file_scan(
                 emit("progress", {"stage": stage, "message": message})
 
             def on_finding(finding_obj) -> None:
+                nonlocal stream_findings_emitted, stream_limit_notified
+                if stream_findings_emitted >= MAX_STREAM_FINDINGS_EMITTED:
+                    if not stream_limit_notified:
+                        emit(
+                            "progress",
+                            {
+                                "stage": "stream_limit",
+                                "message": (
+                                    "High-volume scan detected. "
+                                    f"Showing first {MAX_STREAM_FINDINGS_EMITTED} live findings."
+                                ),
+                            },
+                        )
+                        stream_limit_notified = True
+                    return
                 try:
                     streamed_finding = recalibrate_finding(
                         normalize_callback_finding(finding_obj)
                     )
                     emit("scan_finding", {"finding": streamed_finding})
+                    stream_findings_emitted += 1
                 except Exception as stream_exc:
                     print(f"⚠️ upload scan_finding emit failed: {stream_exc}")
 
@@ -289,6 +332,7 @@ async def stream_uploaded_file_scan(
                 emit("scan_error", {"message": results["error"]})
                 return
 
+            results = apply_finding_aggregation(results)
             findings = results.get("findings", [])
             if findings:
                 severity_breakdown = recalibrate_and_sort_findings(findings)
@@ -296,6 +340,21 @@ async def stream_uploaded_file_scan(
                 results["severity_breakdown"] = severity_breakdown
                 results["has_critical"] = severity_breakdown["CRITICAL"] > 0
                 results["has_high"] = severity_breakdown["HIGH"] > 0
+
+            results = apply_findings_limit(results)
+            findings = results.get("findings", [])
+            if results.get("findings_truncated"):
+                emit(
+                    "progress",
+                    {
+                        "stage": "result_limit",
+                        "message": (
+                            "Large result set detected. "
+                            f"Returning {results.get('displayed_findings')} "
+                            f"of {results.get('total_findings')} findings."
+                        ),
+                    },
+                )
 
             emit("scan_result", {**results, "cached": False})
 
@@ -362,7 +421,9 @@ async def stream_uploaded_file_scan(
                     producer_task.cancel()
                     break
                 try:
-                    event_name, payload = await asyncio.wait_for(queue.get(), timeout=15)
+                    event_name, payload = await asyncio.wait_for(
+                        queue.get(), timeout=15
+                    )
                 except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"
                     continue
@@ -393,7 +454,9 @@ def enforce_rate_limit_stream(client_ip: str):
         enforce_rate_limit(client_ip)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
-        return False, detail.get("message", "Rate limit exceeded"), detail.get(
-            "retry_after"
+        return (
+            False,
+            detail.get("message", "Rate limit exceeded"),
+            detail.get("retry_after"),
         )
     return True, "", None

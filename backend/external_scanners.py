@@ -16,6 +16,11 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
 
+try:
+    from .heuristics import is_false_positive
+except Exception:
+    from heuristics import is_false_positive  # type: ignore
+
 
 class Severity(str, Enum):
     """Severity levels for detected secrets."""
@@ -69,7 +74,9 @@ def mask_secret(secret: str, reveal_chars: int = 4) -> str:
     return f"{secret[:reveal_chars]}{'*' * (len(secret) - reveal_chars * 2)}{secret[-reveal_chars:]}"
 
 
-def determine_severity(secret_type: str, confidence: str, entropy: float) -> Severity:
+def determine_severity(
+    secret_type: Optional[str], confidence: str, entropy: float
+) -> Severity:
     """
     Determine severity level based on secret type, confidence, and entropy.
 
@@ -118,7 +125,8 @@ def determine_severity(secret_type: str, confidence: str, entropy: float) -> Sev
         "Square Access Token",
     ]
 
-    secret_type_lower = secret_type.lower()
+    normalized_secret_type = (secret_type or "Unknown").strip() or "Unknown"
+    secret_type_lower = normalized_secret_type.lower()
 
     # Check critical
     for crit_type in critical_types:
@@ -191,7 +199,7 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
         return []
 
     findings: List[Finding] = []
-    
+
     # Securely create a temp file to avoid TOCTOU races, and close handle for external write
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tf:
         report_path = tf.name
@@ -216,7 +224,27 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
             with open(report_path, "r") as f:
                 gitleaks_results = json.load(f)
 
+            if not isinstance(gitleaks_results, list):
+                print("⚠️ Gitleaks report format mismatch (expected JSON array)")
+                gitleaks_results = []
+
+            filtered_results: List[dict] = []
+            dropped_false_positives = 0
             for item in gitleaks_results:
+                if not isinstance(item, dict):
+                    continue
+                if is_false_positive(item):
+                    dropped_false_positives += 1
+                    continue
+                filtered_results.append(item)
+
+            if dropped_false_positives:
+                print(
+                    "🧹 [Gitleaks] Heuristic filter removed "
+                    f"{dropped_false_positives} likely false positives"
+                )
+
+            for item in filtered_results:
                 # Calculate entropy for the secret
                 from patterns import calculate_shannon_entropy
 
@@ -224,7 +252,7 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
                 entropy = calculate_shannon_entropy(secret)
 
                 # Determine severity
-                secret_type = item.get("RuleID", "Unknown")
+                secret_type = item.get("RuleID") or item.get("Description") or "Unknown"
                 severity = determine_severity(secret_type, "HIGH", entropy)
 
                 finding = Finding(
@@ -255,7 +283,9 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
             try:
                 os.remove(report_path)
             except OSError as e:
-                print(f"⚠️ Could not remove temporary Gitleaks report {report_path}: {e}")
+                print(
+                    f"⚠️ Could not remove temporary Gitleaks report {report_path}: {e}"
+                )
 
     return findings
 
@@ -276,6 +306,7 @@ def run_trufflehog(repo_path: str, timeout: int = 120) -> List[Finding]:
         return []
 
     findings: List[Finding] = []
+    dropped_false_positives = 0
 
     try:
         cmd = [
@@ -306,7 +337,14 @@ def run_trufflehog(repo_path: str, timeout: int = 120) -> List[Finding]:
                 secret = item.get("Raw", "")
                 entropy = calculate_shannon_entropy(secret)
 
-                secret_type = item.get("DetectorName", "Unknown")
+                # Apply post-processing heuristics to TruffleHog raw payloads.
+                if is_false_positive(item):
+                    dropped_false_positives += 1
+                    continue
+
+                secret_type = (
+                    item.get("DetectorName") or item.get("DecoderName") or "Unknown"
+                )
                 severity = determine_severity(secret_type, "HIGH", entropy)
 
                 finding = Finding(
@@ -334,6 +372,12 @@ def run_trufflehog(repo_path: str, timeout: int = 120) -> List[Finding]:
     except Exception as e:
         print(f"⚠️ TruffleHog error: {e}")
 
+    if dropped_false_positives:
+        print(
+            "🧹 [TruffleHog] Heuristic filter removed "
+            f"{dropped_false_positives} likely false positives"
+        )
+
     return findings
 
 
@@ -353,10 +397,12 @@ def deduplicate_findings(findings: List[Finding]) -> List[Finding]:
     seen: Dict[tuple, Finding] = {}
 
     for finding in findings:
+        file_key = (finding.file_path or "").strip("/")
+        secret_type_key = (finding.secret_type or "unknown").lower().replace(" ", "_")
         key = (
-            finding.file_path.strip("/"),
+            file_key,
             finding.line_number,
-            finding.secret_type.lower().replace(" ", "_"),
+            secret_type_key,
         )
 
         if key not in seen:

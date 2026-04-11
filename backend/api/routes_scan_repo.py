@@ -19,7 +19,13 @@ try:
         recalibrate_finding,
     )
     from ..validators import ValidationError, validate_scan_request
-    from .scan_shared import default_ai_meta, enforce_rate_limit
+    from .scan_shared import (
+        MAX_STREAM_FINDINGS_EMITTED,
+        apply_finding_aggregation,
+        apply_findings_limit,
+        default_ai_meta,
+        enforce_rate_limit,
+    )
 except Exception:
     from ai_fixer import run_ai_remediation  # type: ignore
     from cache import scan_cache  # type: ignore
@@ -33,10 +39,44 @@ except Exception:
         recalibrate_finding,
     )
     from validators import ValidationError, validate_scan_request  # type: ignore
-    from api.scan_shared import default_ai_meta, enforce_rate_limit  # type: ignore
+    from api.scan_shared import (  # type: ignore
+        MAX_STREAM_FINDINGS_EMITTED,
+        apply_finding_aggregation,
+        apply_findings_limit,
+        default_ai_meta,
+        enforce_rate_limit,
+    )
 
 
 router = APIRouter(tags=["Scanning"])
+
+
+def _build_cached_response(cached_result: dict, request_start: float) -> dict:
+    """Return cached payload with fresh retrieval timing metadata."""
+    cached_result = apply_finding_aggregation(cached_result)
+    retrieval_duration = max(round(time.perf_counter() - request_start, 3), 0.001)
+    original_duration = cached_result.get(
+        "scan_duration", cached_result.get("scan_time", 0.0)
+    )
+    cache_age_seconds = int(
+        time.time() - cached_result.get("scan_timestamp", time.time())
+    )
+
+    payload = {
+        **cached_result,
+        "cached": True,
+        "cache_age_seconds": cache_age_seconds,
+        "scan_duration": retrieval_duration,
+        "scan_time": retrieval_duration,
+        "cache_retrieval_duration": retrieval_duration,
+        "original_scan_duration": original_duration,
+    }
+
+    performance = payload.get("performance")
+    if isinstance(performance, dict):
+        payload["performance"] = {**performance, "duration": retrieval_duration}
+
+    return apply_findings_limit(payload)
 
 
 @router.post("/scan")
@@ -58,16 +98,11 @@ async def start_scan(request: ScanRequest, req: Request):
             },
         )
 
+    request_start = time.perf_counter()
     cached_result = scan_cache.get(validated_url)
     if cached_result:
         print(f"💨 Returning cached result for {validated_url[:50]}...")
-        return {
-            **cached_result,
-            "cached": True,
-            "cache_age_seconds": int(
-                time.time() - cached_result.get("scan_timestamp", time.time())
-            ),
-        }
+        return _build_cached_response(cached_result, request_start)
 
     print(f"🔍 Starting fresh scan for: {validated_url}")
 
@@ -83,6 +118,7 @@ async def start_scan(request: ScanRequest, req: Request):
                     },
                 )
 
+            results = apply_finding_aggregation(results)
             findings = results.get("findings", [])
             metrics["findings"] = len(findings)
 
@@ -93,9 +129,19 @@ async def start_scan(request: ScanRequest, req: Request):
                 results["has_critical"] = severity_breakdown["CRITICAL"] > 0
                 results["has_high"] = severity_breakdown["HIGH"] > 0
 
+            results = apply_findings_limit(results)
+            findings = results.get("findings", [])
+            if results.get("findings_truncated"):
+                print(
+                    "⚠️ Findings payload capped to "
+                    f"{results.get('displayed_findings')} of {results.get('total_findings')}"
+                )
+
             ai_meta = default_ai_meta()
             if findings:
-                print(f"🤖 Running smart AI remediation for {len(findings)} findings...")
+                print(
+                    f"🤖 Running smart AI remediation for {len(findings)} findings..."
+                )
                 ai_meta = await run_ai_remediation(findings)
                 print(
                     f"   AI calls: {ai_meta['ai_calls_made']} made, "
@@ -146,6 +192,7 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
             },
         )
 
+    request_start = time.perf_counter()
     cached_result = scan_cache.get(validated_url)
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -155,11 +202,11 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
 
     async def producer() -> None:
         findings = []
+        stream_findings_emitted = 0
+        stream_limit_notified = False
         try:
             if cached_result:
-                cache_age_seconds = int(
-                    time.time() - cached_result.get("scan_timestamp", time.time())
-                )
+                cached_payload = _build_cached_response(cached_result, request_start)
                 emit(
                     "progress",
                     {
@@ -167,19 +214,18 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
                         "message": "Returning cached scan result.",
                     },
                 )
-                emit(
-                    "scan_result",
-                    {
-                        **cached_result,
-                        "cached": True,
-                        "cache_age_seconds": cache_age_seconds,
-                    },
-                )
+                emit("scan_result", cached_payload)
                 emit(
                     "complete",
                     {
                         "cached": True,
-                        "cache_age_seconds": cache_age_seconds,
+                        "cache_age_seconds": cached_payload["cache_age_seconds"],
+                        "scan_time": cached_payload["scan_time"],
+                        "scan_duration": cached_payload["scan_duration"],
+                        "cache_retrieval_duration": cached_payload[
+                            "cache_retrieval_duration"
+                        ],
+                        "total_findings": cached_payload.get("total_findings", 0),
                     },
                 )
                 return
@@ -188,15 +234,33 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
                 emit("progress", {"stage": stage, "message": message})
 
             def on_finding(finding_obj) -> None:
+                nonlocal stream_findings_emitted, stream_limit_notified
+                if stream_findings_emitted >= MAX_STREAM_FINDINGS_EMITTED:
+                    if not stream_limit_notified:
+                        emit(
+                            "progress",
+                            {
+                                "stage": "stream_limit",
+                                "message": (
+                                    "High-volume scan detected. "
+                                    f"Showing first {MAX_STREAM_FINDINGS_EMITTED} live findings."
+                                ),
+                            },
+                        )
+                        stream_limit_notified = True
+                    return
                 try:
                     streamed_finding = recalibrate_finding(
                         normalize_callback_finding(finding_obj)
                     )
                     emit("scan_finding", {"finding": streamed_finding})
+                    stream_findings_emitted += 1
                 except Exception as stream_exc:
                     print(f"⚠️ scan_finding emit failed: {stream_exc}")
 
-            emit("progress", {"stage": "scan_start", "message": "Cloning repository..."})
+            emit(
+                "progress", {"stage": "scan_start", "message": "Cloning repository..."}
+            )
 
             with performance_monitor.measure_scan() as metrics:
                 results = await asyncio.to_thread(
@@ -209,6 +273,7 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
                     emit("scan_error", {"message": results["error"]})
                     return
 
+                results = apply_finding_aggregation(results)
                 findings = results.get("findings", [])
                 metrics["findings"] = len(findings)
 
@@ -218,6 +283,21 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
                     results["severity_breakdown"] = severity_breakdown
                     results["has_critical"] = severity_breakdown["CRITICAL"] > 0
                     results["has_high"] = severity_breakdown["HIGH"] > 0
+
+                results = apply_findings_limit(results)
+                findings = results.get("findings", [])
+                if results.get("findings_truncated"):
+                    emit(
+                        "progress",
+                        {
+                            "stage": "result_limit",
+                            "message": (
+                                "Large result set detected. "
+                                f"Returning {results.get('displayed_findings')} "
+                                f"of {results.get('total_findings')} findings."
+                            ),
+                        },
+                    )
 
                 emit("scan_result", {**results, "cached": False})
 
@@ -267,7 +347,10 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
         except Exception as exc:
             print(f"❌ Streaming scan error: {str(exc)}")
             print(traceback.format_exc())
-            emit("scan_error", {"message": f"An error occurred during scanning: {str(exc)}"})
+            emit(
+                "scan_error",
+                {"message": f"An error occurred during scanning: {str(exc)}"},
+            )
         finally:
             emit("end", {})
 
@@ -279,7 +362,9 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
                     producer_task.cancel()
                     break
                 try:
-                    event_name, payload = await asyncio.wait_for(queue.get(), timeout=15)
+                    event_name, payload = await asyncio.wait_for(
+                        queue.get(), timeout=15
+                    )
                 except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"
                     continue

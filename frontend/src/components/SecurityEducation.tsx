@@ -148,22 +148,22 @@ export function EducationTooltip({ topic }: { topic: TopicKey }) {
         onMouseEnter={() => setShow(true)}
         onMouseLeave={() => setShow(false)}
         onClick={() => setShow(!show)}
-        className="text-slate-400 hover:text-slate-600 transition-colors p-0.5"
+        className="p-0.5 text-zinc-500 transition-colors hover:text-zinc-200"
         aria-label={`Learn about ${info.title}`}
       >
         <HelpCircle className="h-4 w-4" />
       </button>
       {show && (
-        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-4 bg-slate-900 text-white text-sm rounded-xl shadow-2xl">
+        <div className="absolute bottom-full left-1/2 z-50 mb-2 w-72 -translate-x-1/2 rounded-md border border-zinc-700 bg-zinc-900 p-4 text-sm text-zinc-100">
           <div className="font-bold mb-2 flex items-center gap-2">
-            <info.icon className="h-4 w-4 text-blue-400" />
+            <info.icon className="h-4 w-4 text-orange-300" />
             {info.title}
           </div>
-          <div className="text-slate-300 text-xs leading-relaxed whitespace-pre-line">
+          <div className="text-xs leading-relaxed whitespace-pre-line text-zinc-300">
             {info.content.split('\n').slice(0, 4).join('\n')}...
           </div>
-          <div className="mt-2 text-xs text-blue-400">Click for full explanation</div>
-          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-full border-8 border-transparent border-t-slate-900" />
+          <div className="mt-2 text-xs text-orange-300">Click for full explanation</div>
+          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-full border-8 border-transparent border-t-zinc-900" />
         </div>
       )}
     </div>
@@ -189,32 +189,32 @@ export function EducationModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] overflow-hidden">
-        <div className="flex items-center justify-between p-4 border-b border-slate-200">
+      <div className="max-h-[80vh] w-full max-w-lg overflow-hidden rounded-md border border-zinc-800 bg-zinc-900">
+        <div className="flex items-center justify-between border-b border-zinc-800 p-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-100">
-              <info.icon className="h-5 w-5 text-blue-600" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-md border border-orange-800 bg-orange-950/40">
+              <info.icon className="h-5 w-5 text-orange-300" />
             </div>
-            <h3 className="text-lg font-bold text-slate-900">{info.title}</h3>
+            <h3 className="text-lg font-bold text-zinc-100">{info.title}</h3>
           </div>
           <button
             onClick={onClose}
-            className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+            className="rounded-md p-2 transition-colors hover:bg-zinc-800"
           >
-            <X className="h-5 w-5 text-slate-500" />
+            <X className="h-5 w-5 text-zinc-400" />
           </button>
         </div>
         <div className="p-6 overflow-y-auto max-h-[60vh]">
           <div className="prose prose-sm max-w-none">
-            <div className="whitespace-pre-line text-slate-700 leading-relaxed">
+            <div className="leading-relaxed whitespace-pre-line text-zinc-300">
               {info.content}
             </div>
           </div>
         </div>
-        <div className="p-4 border-t border-slate-200 bg-slate-50">
+        <div className="border-t border-zinc-800 bg-zinc-950 p-4">
           <button
             onClick={onClose}
-            className="w-full py-2 px-4 bg-slate-900 text-white rounded-lg font-medium hover:bg-slate-800 transition-colors"
+            className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 font-mono text-xs tracking-wide text-zinc-100 transition-colors hover:border-zinc-600 hover:bg-zinc-800"
           >
             Got it!
           </button>
@@ -243,22 +243,22 @@ export function SecurityTipsBanner() {
   if (dismissed) return null;
 
   return (
-    <div className="bg-gradient-to-r from-blue-500 to-indigo-500 text-white px-4 py-3 rounded-xl shadow-lg">
+    <div className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-3 text-zinc-100">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <Shield className="h-5 w-5 flex-shrink-0" />
+          <Shield className="h-5 w-5 flex-shrink-0 text-emerald-300" />
           <p className="text-sm font-medium">{tips[tipIndex]}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setTipIndex((i) => (i + 1) % tips.length)}
-            className="text-xs bg-white/20 hover:bg-white/30 px-3 py-1 rounded-full transition-colors"
+            className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-mono transition-colors hover:border-orange-500 hover:bg-zinc-700"
           >
             Next tip
           </button>
           <button
             onClick={() => setDismissed(true)}
-            className="p-1 hover:bg-white/20 rounded-full transition-colors"
+            className="rounded-md p-1 transition-colors hover:bg-zinc-800"
           >
             <X className="h-4 w-4" />
           </button>
@@ -284,29 +284,29 @@ export function RevealSecretWarning({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-md mx-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm">
+      <div className="max-w-md mx-4 rounded-md border border-zinc-800 bg-zinc-900 p-6">
         <div className="flex items-center gap-3 mb-4">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-100">
-            <Eye className="h-6 w-6 text-yellow-600" />
+          <div className="flex h-12 w-12 items-center justify-center rounded-md border border-orange-800 bg-orange-950/50">
+            <Eye className="h-6 w-6 text-orange-300" />
           </div>
           <div>
-            <h3 className="text-lg font-bold text-slate-900">Reveal Secret?</h3>
-            <p className="text-sm text-slate-500">This action may expose sensitive data</p>
+            <h3 className="text-lg font-bold text-zinc-100">Reveal Secret?</h3>
+            <p className="text-sm text-zinc-400">This action may expose sensitive data</p>
           </div>
         </div>
 
         <div className="space-y-3 mb-6">
-          <div className="flex items-start gap-2 text-sm text-slate-600">
-            <AlertTriangle className="h-4 w-4 text-yellow-500 mt-0.5 flex-shrink-0" />
+          <div className="flex items-start gap-2 text-sm text-zinc-300">
+            <AlertTriangle className="h-4 w-4 text-orange-400 mt-0.5 flex-shrink-0" />
             <span>Make sure you&apos;re not screen sharing</span>
           </div>
-          <div className="flex items-start gap-2 text-sm text-slate-600">
-            <AlertTriangle className="h-4 w-4 text-yellow-500 mt-0.5 flex-shrink-0" />
+          <div className="flex items-start gap-2 text-sm text-zinc-300">
+            <AlertTriangle className="h-4 w-4 text-orange-400 mt-0.5 flex-shrink-0" />
             <span>Ensure no one can see your screen</span>
           </div>
-          <div className="flex items-start gap-2 text-sm text-slate-600">
-            <AlertTriangle className="h-4 w-4 text-yellow-500 mt-0.5 flex-shrink-0" />
+          <div className="flex items-start gap-2 text-sm text-zinc-300">
+            <AlertTriangle className="h-4 w-4 text-orange-400 mt-0.5 flex-shrink-0" />
             <span>The secret will be visible until you hide it again</span>
           </div>
         </div>
@@ -314,13 +314,13 @@ export function RevealSecretWarning({
         <div className="flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 py-2 px-4 border border-slate-300 text-slate-700 rounded-lg font-medium hover:bg-slate-50 transition-colors"
+            className="flex-1 rounded-md border border-zinc-700 px-4 py-2 text-zinc-200 transition-colors hover:bg-zinc-800"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className="flex-1 py-2 px-4 bg-yellow-500 text-white rounded-lg font-medium hover:bg-yellow-600 transition-colors flex items-center justify-center gap-2"
+            className="flex flex-1 items-center justify-center gap-2 rounded-md border border-orange-700 bg-orange-800/80 px-4 py-2 font-mono text-xs tracking-wide text-zinc-100 transition-colors hover:bg-orange-700"
           >
             <Eye className="h-4 w-4" />
             Reveal Secret
@@ -337,8 +337,8 @@ export function RevealSecretWarning({
  */
 export function PrivateKeyWarning() {
   return (
-    <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
-      <AlertTriangle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+    <div className="flex items-start gap-2 rounded-md border border-red-800 bg-red-950/40 p-3 text-sm text-red-200">
+      <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-300" />
       <div>
         <strong>Warning:</strong> Never paste private keys or sensitive credentials here.
         This tool is for scanning repositories, not for analyzing individual secrets.

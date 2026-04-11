@@ -17,11 +17,10 @@ export function ActionStatusBanner({ status, onDismiss }: ActionStatusBannerProp
 
   return (
     <div
-      className={`mt-3 flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${
-        isError
-          ? "border-red-200 bg-red-50 text-red-800"
-          : "border-green-200 bg-green-50 text-green-800"
-      }`}
+      className={`mt-3 flex items-center justify-between gap-3 rounded-md border px-4 py-3 ${isError
+          ? "border-red-800 bg-red-950/40 text-red-200"
+          : "border-emerald-800 bg-emerald-950/40 text-emerald-200"
+        }`}
       role="status"
       aria-live="polite"
     >
@@ -32,7 +31,7 @@ export function ActionStatusBanner({ status, onDismiss }: ActionStatusBannerProp
       <button
         type="button"
         onClick={onDismiss}
-        className="rounded p-1 hover:bg-black/5 transition-colors"
+        className="rounded p-1 transition-colors hover:bg-zinc-800/80"
         aria-label="Dismiss message"
       >
         <X className="h-4 w-4" />

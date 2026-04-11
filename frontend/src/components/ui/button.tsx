@@ -8,10 +8,10 @@ export interface ButtonProps
 }
 
 const buttonVariants = {
-  default: "bg-gray-900 text-white hover:bg-gray-800",
-  outline: "border border-slate-300 bg-white hover:bg-slate-50 text-slate-900",
-  ghost: "hover:bg-slate-100 text-slate-900",
-  destructive: "bg-red-600 text-white hover:bg-red-700",
+  default: "border border-zinc-700 bg-zinc-900 text-zinc-100 hover:bg-zinc-800 hover:border-zinc-600",
+  outline: "border border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800/70 text-zinc-200",
+  ghost: "hover:bg-zinc-900 text-zinc-300 hover:text-zinc-100",
+  destructive: "border border-red-900/70 bg-red-950/60 text-red-200 hover:bg-red-950",
 };
 
 const buttonSizes = {
@@ -29,7 +29,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         className={cn(
           "inline-flex items-center justify-center whitespace-nowrap rounded-md",
           "text-sm font-medium transition-colors",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950",
           "disabled:pointer-events-none disabled:opacity-50",
           buttonVariants[variant],
           buttonSizes[size],
