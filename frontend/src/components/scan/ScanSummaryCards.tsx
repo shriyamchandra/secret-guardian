@@ -3,7 +3,17 @@ import { CheckCircle2, Clock, AlertOctagon } from "lucide-react";
 
 export const ScanSummaryCards = ({ scanResult }: { scanResult: ScanResult | null }) => {
   if (!scanResult) return null;
-  const { total_findings, files_affected, severity_breakdown, scan_duration, has_critical, has_high } = scanResult;
+  const {
+    total_findings,
+    files_affected,
+    severity_breakdown,
+    scan_duration,
+    has_critical,
+    has_high,
+    heuristics_stats,
+  } = scanResult;
+  const signalsAnalyzed = heuristics_stats?.signals_analyzed ?? 0;
+  const falsePositivesFiltered = heuristics_stats?.false_positives_filtered ?? 0;
 
   return (
     <>
@@ -70,6 +80,18 @@ export const ScanSummaryCards = ({ scanResult }: { scanResult: ScanResult | null
           <div className="text-xs uppercase tracking-wide text-zinc-400">Scan Duration</div>
         </div>
       </div>
+
+      {total_findings === 0 && (
+        <div className="mb-6 rounded-md border border-emerald-700/70 bg-emerald-950/35 p-4">
+          <div className="inline-flex items-center gap-2 rounded-full border border-emerald-600/70 bg-emerald-900/40 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-200">
+            <span className="h-2 w-2 rounded-full bg-emerald-300 animate-pulse" />
+            Security Health Check: Passed
+          </div>
+          <p className="mt-3 text-sm text-emerald-200/90">
+            Heuristics Engine analyzed <strong>{signalsAnalyzed}</strong> potential signals and filtered out <strong>{falsePositivesFiltered}</strong> false positives.
+          </p>
+        </div>
+      )}
 
       {/* High Risk Warning */}
       {(has_critical || has_high) && (

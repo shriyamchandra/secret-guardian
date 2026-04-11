@@ -339,3 +339,62 @@ In addition to scanner quality improvements, we delivered UX and operations chan
 - **Findings pagination and truncation-aware UI:** frontend now handles large scans safely with clear messaging and page-based rendering.
 - **Stable reveal behavior:** finding keys were stabilized and reveal flow simplified to avoid dead-end overlay states.
 - **Improved startup resilience:** `start.sh` was rewritten as a detached process manager with `start|stop|status`, PID tracking, and log files.
+
+
+My tool successfully identified Azure Telemetry keys in the VS Code repository. While these keys are often left in public repos for application functionality, Secret Guardian identified them as a 'Medium' risk because they could be used for Log Injection attacks. This demonstrates that my tool isn't just finding 'random strings'—it's identifying real-world infrastructure signatures used by the biggest tech companies in the world."
+
+
+Standard scanners are tuned for high-entropy cloud keys. When I tested Secret Guardian against legacy-style repos like DVWA, I identified a coverage gap for low-entropy hardcoded credentials in PHP/Config files. I engineered a two-stage fix: first, a targeted assignment-pattern regex, and second, a 'Heuristic Override' that allows these low-entropy strings to pass through only if they are found in executable configuration files, but keeps them suppressed in documentation to prevent noise."
+
+### 29. What repository-platform and URL validation improvements were added?
+We expanded scanning beyond GitHub while tightening URL security boundaries.
+
+- **Trusted host allowlist:** supports `github.com`, `gitlab.com`, and `bitbucket.org` (also configurable via env).
+- **Strict URL hardening:** enforces HTTPS-only web URLs, blocks embedded credentials, query strings, fragments, and custom ports.
+- **Path safety checks:** validates owner/repo path segments and blocks malformed traversal-like patterns.
+- **SSH normalization:** safely converts supported `git@host:owner/repo(.git)` to canonical HTTPS for stable caching.
+
+### 30. What scan export and auditability improvements were shipped?
+We implemented richer, source-aware exports so reports can be audited and shared more easily.
+
+- **New plain-text log export endpoint:** `POST /export/log` for structured downloadable scan logs.
+- **Export metadata enrichment:** source type (URL vs ZIP), scan target, uploaded filename/size, scanners used, files affected, total/displayed findings, truncation flags.
+- **Masked-value logging:** secret values in logs are masked by default while preserving location/context data.
+- **Frontend actions:** both **Download Log** and **Copy Log** are available directly from scan results.
+
+### 31. What detection upgrades were added for hardcoded DB/service credentials?
+We introduced dedicated detection and templating-aware safeguards to improve coverage without increasing noise.
+
+- **New `DB_CREDENTIAL` pattern:** catches hardcoded assignments for names like `db_password`, `mysql_password`, `postgres_password`, `db_user`, etc.
+- **Quoted hardcoded-value enforcement:** only flags quoted string literals with minimum length threshold.
+- **Fallback assignment support:** detects hardcoded values in ternary/default patterns (e.g., `getenv(...) ?: 'p@ssw0rd'`).
+- **Jinja/template avoidance:** regex excludes templated values like `"{{ DB_PASS }}"` from matching.
+
+### 32. How did the heuristic engine evolve from drop-only to smart noise grading?
+We refactored heuristics into a two-stage model: strict-drop for clear false positives and graded retention for contextual noise.
+
+- **Strict-drop remains for:**
+    - pure 32/40/64 hex hashes,
+    - ignored path segments (`/.i18n/`, `/.lock/`, `/node_modules/`),
+    - template/variable references (`{{ }}`, `${VAR}`, `$VAR`, `process.env.*`, `os.environ`, uppercase underscore vars).
+- **Noise grading now retains and labels findings:**
+    - docs (`.md/.txt/.rst`) => severity override `LOW`, label `DOCUMENTATION_TEMPLATE`, AI ineligible.
+    - test fixtures => severity override `MEDIUM`, label `TEST_FIXTURE`.
+    - high-entropy test secrets (`entropy > 5.5`) => forced `HIGH` to avoid missing real leaked keys.
+- **Unified finding metadata for UI:** adds `is_noise`, `noise_type`, `severity_override`, and `ai_remediation_eligible`.
+
+### 33. How was AI remediation behavior aligned with noise grading?
+AI orchestration now respects heuristic eligibility flags to reduce unnecessary LLM traffic.
+
+- **AI gate update:** if `ai_remediation_eligible` is `False`, the finding is skipped by AI orchestration.
+- **Practical effect:** documentation/template findings are still visible for awareness, but they do not consume AI budget.
+
+### 34. What UX proof was added for “0 findings” outcomes?
+We improved trust signaling in the all-clear state so users can see the scanner worked, not silently failed.
+
+- **Security Health badge:** shows **Security Health Check: Passed** with subtle pulse animation when findings are zero.
+- **Heuristics transparency text:** displays analyzed signal count and filtered false-positive count from backend stats.
+- **Outcome:** users get a verifiable “engine ran and filtered noise” explanation instead of a bare empty-state message.
+
+
+When I first scanned the OpenClaw repository, the raw output returned 9,000+ false positives, which literally crashed my React frontend because the DOM couldn't handle that many nodes. I solved this in two stages: First, I built a Python heuristic engine that reduced the noise from 9,000 to 0 using signature and entropy filtering. Second, I refactored the frontend to use a paginated, stateful layout with skeleton loaders, ensuring that even if a future scan returns high-volume data, the UI remains responsive and 'Senior-level' snappy."

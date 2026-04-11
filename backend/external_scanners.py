@@ -183,7 +183,11 @@ def is_trufflehog_installed() -> bool:
         return False
 
 
-def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
+def run_gitleaks(
+    repo_path: str,
+    timeout: int = 120,
+    heuristics_stats: Optional[Dict[str, int]] = None,
+) -> List[Finding]:
     """
     Run Gitleaks scanner on a repository.
 
@@ -199,6 +203,8 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
         return []
 
     findings: List[Finding] = []
+    signals_analyzed = 0
+    dropped_false_positives = 0
 
     # Securely create a temp file to avoid TOCTOU races, and close handle for external write
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tf:
@@ -229,10 +235,10 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
                 gitleaks_results = []
 
             filtered_results: List[dict] = []
-            dropped_false_positives = 0
             for item in gitleaks_results:
                 if not isinstance(item, dict):
                     continue
+                signals_analyzed += 1
                 if is_false_positive(item):
                     dropped_false_positives += 1
                     continue
@@ -279,6 +285,14 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
     except Exception as e:
         print(f"⚠️ Gitleaks error: {e}")
     finally:
+        if heuristics_stats is not None:
+            heuristics_stats["signals_analyzed"] = (
+                int(heuristics_stats.get("signals_analyzed", 0)) + signals_analyzed
+            )
+            heuristics_stats["false_positives_filtered"] = (
+                int(heuristics_stats.get("false_positives_filtered", 0))
+                + dropped_false_positives
+            )
         if report_path and os.path.exists(report_path):
             try:
                 os.remove(report_path)
@@ -290,7 +304,11 @@ def run_gitleaks(repo_path: str, timeout: int = 120) -> List[Finding]:
     return findings
 
 
-def run_trufflehog(repo_path: str, timeout: int = 120) -> List[Finding]:
+def run_trufflehog(
+    repo_path: str,
+    timeout: int = 120,
+    heuristics_stats: Optional[Dict[str, int]] = None,
+) -> List[Finding]:
     """
     Run TruffleHog scanner on a repository.
 
@@ -307,6 +325,7 @@ def run_trufflehog(repo_path: str, timeout: int = 120) -> List[Finding]:
 
     findings: List[Finding] = []
     dropped_false_positives = 0
+    signals_analyzed = 0
 
     try:
         cmd = [
@@ -326,6 +345,7 @@ def run_trufflehog(repo_path: str, timeout: int = 120) -> List[Finding]:
                 continue
             try:
                 item = json.loads(line)
+                signals_analyzed += 1
 
                 # Extract relevant fields
                 source_metadata = (
@@ -376,6 +396,15 @@ def run_trufflehog(repo_path: str, timeout: int = 120) -> List[Finding]:
         print(
             "🧹 [TruffleHog] Heuristic filter removed "
             f"{dropped_false_positives} likely false positives"
+        )
+
+    if heuristics_stats is not None:
+        heuristics_stats["signals_analyzed"] = (
+            int(heuristics_stats.get("signals_analyzed", 0)) + signals_analyzed
+        )
+        heuristics_stats["false_positives_filtered"] = (
+            int(heuristics_stats.get("false_positives_filtered", 0))
+            + dropped_false_positives
         )
 
     return findings

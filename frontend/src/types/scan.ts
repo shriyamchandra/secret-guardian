@@ -31,6 +31,10 @@ export type Finding = {
   raw_value?: string;
   scanner_source?: string;
   source_scanners?: string[];
+  is_noise?: boolean;
+  noise_type?: string | null;
+  severity_override?: Severity | null;
+  ai_remediation_eligible?: boolean;
   occurrences?: FindingOccurrence[];
   occurrence_count?: number;
   threat_context?: ThreatContext;
@@ -49,6 +53,13 @@ export type ScanResult = {
   files_affected: number;
   severity_breakdown: Record<Severity, number>;
   scan_duration: number;
+  source?: string;
+  scan_target?: string;
+  filename?: string;
+  file_size_mb?: number;
+  scan_time?: number;
+  cached?: boolean;
+  scan_timestamp?: number;
   displayed_findings?: number;
   findings_truncated?: boolean;
   truncated_findings?: number;
@@ -57,6 +68,10 @@ export type ScanResult = {
   aggregated_findings?: boolean;
   has_critical: boolean;
   has_high: boolean;
+  heuristics_stats?: {
+    signals_analyzed: number;
+    false_positives_filtered: number;
+  };
   ai_stats?: {
     ai_calls_made: number;
     ai_calls_skipped: number;

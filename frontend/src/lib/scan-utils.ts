@@ -14,8 +14,19 @@ export const parseTimeoutMs = (value: string | undefined, fallback: number) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-export const isGithubUrl = (url: string) =>
-  /^https?:\/\/(www\.)?github\.com\/[\w.-]+\/[\w.-]+(\.git)?\/?$/i.test(url.trim());
+const SUPPORTED_REPO_PATTERNS = [
+  /^https:\/\/(www\.)?github\.com\/[\w.-]+\/[\w.-]+(\.git)?\/?$/i,
+  /^https:\/\/(www\.)?bitbucket\.org\/[\w.-]+\/[\w.-]+(\.git)?\/?$/i,
+  /^https:\/\/(www\.)?gitlab\.com\/[\w.-]+(?:\/[\w.-]+)+(\.git)?\/?$/i,
+];
+
+export const isSupportedRepoUrl = (url: string) => {
+  const candidate = url.trim();
+  return SUPPORTED_REPO_PATTERNS.some((pattern) => pattern.test(candidate));
+};
+
+// Backward-compatible alias.
+export const isGithubUrl = isSupportedRepoUrl;
 
 export const isAbortError = (e: unknown) =>
   e instanceof DOMException && e.name === "AbortError";

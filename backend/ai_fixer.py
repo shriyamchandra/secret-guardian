@@ -690,6 +690,9 @@ def _is_medium_ambiguous(finding: Dict[str, Any]) -> bool:
 
 def should_call_ai(finding: Dict[str, Any]) -> bool:
     """Decide whether a finding warrants an AI call based on recalibrated severity and threat context."""
+    if finding.get("ai_remediation_eligible") is False:
+        return False
+
     sev = finding.get("severity", "HIGH")
 
     # Always call for CRITICAL/HIGH

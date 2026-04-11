@@ -36,6 +36,7 @@ try:
         deduplicate_findings,
         get_scanner_status,
     )
+    from .heuristics import grade_finding_noise
 except Exception:
     from patterns import (
         SECRET_PATTERNS,
@@ -52,6 +53,7 @@ except Exception:
         deduplicate_findings,
         get_scanner_status,
     )
+    from heuristics import grade_finding_noise
 
 
 # Configuration
@@ -220,7 +222,9 @@ def has_real_google_service_account_context(lines: List[str], match_index: int) 
     if "-----begin private key-----" not in context:
         return False
 
-    if any(marker in context for marker in ["placeholder", "example", "sample", "your_"]):
+    if any(
+        marker in context for marker in ["placeholder", "example", "sample", "your_"]
+    ):
         return False
 
     return True
@@ -229,6 +233,7 @@ def has_real_google_service_account_context(lines: List[str], match_index: int) 
 def run_regex_scanner(
     repo_path: str,
     on_finding: Optional[Callable[[Finding], None]] = None,
+    heuristics_stats: Optional[Dict[str, int]] = None,
 ) -> List[Finding]:
     """
     Run the built-in regex-based scanner.
@@ -240,6 +245,8 @@ def run_regex_scanner(
         List of Finding objects
     """
     findings: List[Finding] = []
+    heuristic_signals_analyzed = 0
+    heuristic_false_positives = 0
     files_scanned = 0
 
     for root, dirs, files in os.walk(repo_path):
@@ -269,7 +276,9 @@ def run_regex_scanner(
                         if match := pattern.search(line):
                             if (
                                 secret_type == "Google Cloud Service Account"
-                                and not has_real_google_service_account_context(lines, i)
+                                and not has_real_google_service_account_context(
+                                    lines, i
+                                )
                             ):
                                 continue
 
@@ -277,13 +286,26 @@ def run_regex_scanner(
                                 match.group(1) if match.groups() else match.group(0)
                             )
 
+                            heuristic_signals_analyzed += 1
+                            grade = grade_finding_noise(
+                                {
+                                    "secret_type": secret_type,
+                                    "file_path": rel_path,
+                                    "raw_value": matched_text,
+                                }
+                            )
+                            if grade.get("drop"):
+                                heuristic_false_positives += 1
+                                continue
+
                             confidence_level, confidence_score = (
                                 calculate_confidence_score(
                                     secret_type, matched_text, line, file_path
                                 )
                             )
 
-                            if confidence_level == "LOW":
+                            has_severity_override = bool(grade.get("severity_override"))
+                            if confidence_level == "LOW" and not has_severity_override:
                                 continue
 
                             start = max(0, i - 2)
@@ -328,6 +350,16 @@ def run_regex_scanner(
 
             except Exception as e:
                 print(f"⚠️ Could not read file {file_path}: {e}")
+
+    if heuristics_stats is not None:
+        heuristics_stats["signals_analyzed"] = (
+            int(heuristics_stats.get("signals_analyzed", 0))
+            + heuristic_signals_analyzed
+        )
+        heuristics_stats["false_positives_filtered"] = (
+            int(heuristics_stats.get("false_positives_filtered", 0))
+            + heuristic_false_positives
+        )
 
     return findings
 
@@ -461,6 +493,10 @@ def scan_directory(
 
     all_findings: List[Finding] = []
     scanners_used = []
+    heuristics_stats = {
+        "signals_analyzed": 0,
+        "false_positives_filtered": 0,
+    }
 
     try:
         scanner_timeout = timeout // 3
@@ -472,7 +508,11 @@ def scan_directory(
                 print(f"⚠️ Scan progress callback failed: {cb_exc}")
         print("🔍 Running regex scanner...")
         scanners_used.append("regex")
-        regex_findings = run_regex_scanner(directory_path, on_finding=on_finding)
+        regex_findings = run_regex_scanner(
+            directory_path,
+            on_finding=on_finding,
+            heuristics_stats=heuristics_stats,
+        )
         all_findings.extend(regex_findings)
 
         if use_external_scanners:
@@ -487,7 +527,9 @@ def scan_directory(
                 print("🔍 Running Gitleaks scanner...")
                 scanners_used.append("gitleaks")
                 gitleaks_findings = run_gitleaks(
-                    directory_path, timeout=int(scanner_timeout)
+                    directory_path,
+                    timeout=int(scanner_timeout),
+                    heuristics_stats=heuristics_stats,
                 )
                 all_findings.extend(gitleaks_findings)
                 if on_finding:
@@ -506,7 +548,9 @@ def scan_directory(
                 print("🔍 Running TruffleHog scanner...")
                 scanners_used.append("trufflehog")
                 trufflehog_findings = run_trufflehog(
-                    directory_path, timeout=int(scanner_timeout)
+                    directory_path,
+                    timeout=int(scanner_timeout),
+                    heuristics_stats=heuristics_stats,
                 )
                 all_findings.extend(trufflehog_findings)
                 if on_finding:
@@ -521,6 +565,30 @@ def scan_directory(
         print(f"✅ {len(deduplicated)} unique findings after deduplication")
 
         findings_list = [f.to_dict() for f in deduplicated]
+        graded_findings: List[Dict[str, Any]] = []
+
+        for finding in findings_list:
+            grade = grade_finding_noise(finding)
+            if grade.get("drop"):
+                heuristics_stats["false_positives_filtered"] = (
+                    int(heuristics_stats.get("false_positives_filtered", 0)) + 1
+                )
+                continue
+
+            severity_override = grade.get("severity_override")
+            if severity_override:
+                finding["severity"] = severity_override
+
+            finding["is_noise"] = bool(grade.get("is_noise", False))
+            finding["noise_type"] = grade.get("noise_type")
+            finding["severity_override"] = severity_override
+            finding["ai_remediation_eligible"] = bool(
+                grade.get("ai_remediation_eligible", True)
+            )
+
+            graded_findings.append(finding)
+
+        findings_list = graded_findings
 
         severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
         findings_list.sort(
@@ -555,6 +623,7 @@ def scan_directory(
             ),
             "has_critical": severity_breakdown["CRITICAL"] > 0,
             "has_high": severity_breakdown["HIGH"] > 0,
+            "heuristics_stats": heuristics_stats,
         }
 
     except Exception as e:

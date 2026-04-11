@@ -3,8 +3,9 @@ Input validation and security utilities.
 Prevents malicious inputs and ensures data integrity.
 """
 
+import os
 import re
-from typing import Tuple
+from typing import Iterable, Tuple
 from urllib.parse import urlparse
 
 
@@ -15,14 +16,13 @@ class ValidationError(Exception):
 
 
 class RepoValidator:
-    """Validator for GitHub repository URLs and inputs."""
+    """Validator for supported Git hosting repository URLs and inputs."""
 
-    # Allowed GitHub URL patterns
-    GITHUB_PATTERNS = [
-        r"^https?://github\.com/[\w\-]+/[\w\-\.]+/?$",
-        r"^https?://github\.com/[\w\-]+/[\w\-\.]+\.git$",
-        r"^git@github\.com:[\w\-]+/[\w\-\.]+\.git$",
-    ]
+    DEFAULT_ALLOWED_HOSTS = ("github.com", "gitlab.com", "bitbucket.org")
+    SEGMENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,99}$")
+    SSH_PATTERN = re.compile(
+        r"^git@(?P<host>[A-Za-z0-9\-.]+):(?P<path>[A-Za-z0-9._\-/]+?)(?:\.git)?/?$"
+    )
 
     # Blocked/dangerous patterns
     DANGEROUS_PATTERNS = [
@@ -36,12 +36,41 @@ class RepoValidator:
     ]
 
     MAX_URL_LENGTH = 500
-    MAX_REPO_NAME_LENGTH = 100
+    MAX_PATH_SEGMENTS = 8
 
     @classmethod
-    def validate_github_url(cls, url: str) -> Tuple[bool, str]:
+    def _configured_allowed_hosts(cls) -> set[str]:
+        raw = os.getenv("ALLOWED_REPO_HOSTS", "")
+        if not raw.strip():
+            return set(cls.DEFAULT_ALLOWED_HOSTS)
+
+        hosts = {
+            cls._normalize_host(entry)
+            for entry in raw.split(",")
+            if cls._normalize_host(entry)
+        }
+        return hosts or set(cls.DEFAULT_ALLOWED_HOSTS)
+
+    @staticmethod
+    def _normalize_host(host: str) -> str:
+        host = (host or "").strip().lower().rstrip(".")
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+
+    @classmethod
+    def _valid_segments(cls, segments: Iterable[str]) -> bool:
+        for segment in segments:
+            if segment in {".", ".."}:
+                return False
+            if not cls.SEGMENT_PATTERN.fullmatch(segment):
+                return False
+        return True
+
+    @classmethod
+    def validate_repository_url(cls, url: str) -> Tuple[bool, str]:
         """
-        Validate GitHub repository URL.
+        Validate repository URL for supported Git hosting providers.
 
         Args:
             url: Repository URL to validate
@@ -54,6 +83,7 @@ class RepoValidator:
             return False, "Repository URL cannot be empty"
 
         url = url.strip()
+        allowed_hosts = cls._configured_allowed_hosts()
 
         # Check length
         if len(url) > cls.MAX_URL_LENGTH:
@@ -64,67 +94,82 @@ class RepoValidator:
             if re.search(pattern, url, re.IGNORECASE):
                 return False, "Invalid URL: contains potentially dangerous characters"
 
-        # Validate URL structure
+        # Validate SSH-style URLs: git@host:owner/repo(.git)
+        ssh_match = cls.SSH_PATTERN.fullmatch(url)
+        if ssh_match:
+            host = cls._normalize_host(ssh_match.group("host"))
+            if host not in allowed_hosts:
+                hosts = ", ".join(sorted(allowed_hosts))
+                return False, f"Unsupported repository host. Allowed hosts: {hosts}"
+
+            raw_path = ssh_match.group("path").strip("/")
+            path_segments = [segment for segment in raw_path.split("/") if segment]
+            if len(path_segments) < 2:
+                return False, "Invalid repository path: expected owner/repository"
+            if len(path_segments) > cls.MAX_PATH_SEGMENTS:
+                return False, "Invalid repository path: too many path segments"
+            if not cls._valid_segments(path_segments):
+                return False, "Invalid repository path: malformed owner or repository"
+
+            return True, "Valid repository URL"
+
+        # Validate HTTPS/HTTP URLs via URL parsing
         try:
             parsed = urlparse(url)
-            if parsed.scheme not in ["http", "https", "git"]:
-                return False, "Invalid URL scheme (use http, https, or git)"
         except Exception:
             return False, "Malformed URL"
 
-        # Check against GitHub patterns
-        is_valid_github = any(re.match(pattern, url) for pattern in cls.GITHUB_PATTERNS)
+        if parsed.scheme != "https":
+            return False, "Invalid URL scheme (use https)"
 
-        if not is_valid_github:
+        if parsed.username or parsed.password:
+            return False, "Credentials in repository URL are not allowed"
+
+        if parsed.query or parsed.fragment:
             return (
                 False,
-                "Invalid GitHub URL format. Expected: https://github.com/owner/repo",
+                "Repository URL must not include query parameters or fragments",
             )
 
-        # Extract owner/repo and validate
-        try:
-            if "github.com/" in url:
-                path = url.split("github.com/")[1].rstrip("/").replace(".git", "")
-                parts = path.split("/")
+        if parsed.port is not None:
+            return False, "Custom ports are not allowed in repository URLs"
 
-                if len(parts) < 2:
-                    return False, "Invalid repository path"
+        host = cls._normalize_host(parsed.hostname or "")
+        if host not in allowed_hosts:
+            hosts = ", ".join(sorted(allowed_hosts))
+            return False, f"Unsupported repository host. Allowed hosts: {hosts}"
 
-                owner, repo = parts[0], parts[1]
+        path = parsed.path.strip("/")
+        if not path:
+            return False, "Invalid repository path: expected owner/repository"
 
-                # Validate owner and repo names
-                if not cls._is_valid_github_name(owner):
-                    return False, f"Invalid owner name: {owner}"
+        path_segments = [segment for segment in path.split("/") if segment]
+        if path_segments and path_segments[-1].endswith(".git"):
+            path_segments[-1] = path_segments[-1][:-4]
 
-                if not cls._is_valid_github_name(repo):
-                    return False, f"Invalid repository name: {repo}"
+        if len(path_segments) < 2:
+            return False, "Invalid repository path: expected owner/repository"
+        if len(path_segments) > cls.MAX_PATH_SEGMENTS:
+            return False, "Invalid repository path: too many path segments"
+        if not cls._valid_segments(path_segments):
+            return False, "Invalid repository path: malformed owner or repository"
 
-        except Exception as e:
-            return False, f"Error parsing repository URL: {str(e)}"
+        return True, "Valid repository URL"
 
-        return True, "Valid GitHub URL"
-
-    @staticmethod
-    def _is_valid_github_name(name: str) -> bool:
+    @classmethod
+    def validate_github_url(cls, url: str) -> Tuple[bool, str]:
         """
-        Check if name follows GitHub username/repo naming rules.
+        Backward-compatible wrapper.
 
-        Args:
-            name: Username or repository name
-
-        Returns:
-            True if valid
+        Historically this validator method was GitHub-only; it now validates
+        all configured repository hosts.
         """
-        if not name or len(name) > 100:
-            return False
-
-        # GitHub allows alphanumeric, hyphens, dots (but not starting/ending with them)
-        return bool(re.match(r"^[a-zA-Z0-9][a-zA-Z0-9\-\.]*[a-zA-Z0-9]$", name))
+        return cls.validate_repository_url(url)
 
     @classmethod
     def sanitize_url(cls, url: str) -> str:
         """
-        Sanitize GitHub URL to standard format.
+        Sanitize supported repository URL to standard HTTPS format.
 
         Args:
             url: Raw repository URL
@@ -134,9 +179,12 @@ class RepoValidator:
         """
         url = url.strip()
 
-        # Convert git@ to https://
-        if url.startswith("git@github.com:"):
-            url = url.replace("git@github.com:", "https://github.com/")
+        # Convert git@host:path to https://host/path
+        ssh_match = cls.SSH_PATTERN.fullmatch(url)
+        if ssh_match:
+            host = cls._normalize_host(ssh_match.group("host"))
+            path = ssh_match.group("path").strip("/")
+            url = f"https://{host}/{path}"
 
         # Remove .git suffix if present
         if url.endswith(".git"):
@@ -145,6 +193,9 @@ class RepoValidator:
         # Ensure https://
         if url.startswith("http://"):
             url = url.replace("http://", "https://", 1)
+
+        # Drop trailing slash for stable cache keys
+        url = url.rstrip("/")
 
         return url
 
@@ -163,7 +214,7 @@ def validate_scan_request(repo_url: str) -> str:
         ValidationError: If validation fails
     """
     # Validate
-    is_valid, error_message = RepoValidator.validate_github_url(repo_url)
+    is_valid, error_message = RepoValidator.validate_repository_url(repo_url)
 
     if not is_valid:
         raise ValidationError(error_message)

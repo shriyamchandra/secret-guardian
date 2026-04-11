@@ -51,7 +51,9 @@ except Exception:
 router = APIRouter(tags=["Scanning"])
 
 
-def _build_cached_response(cached_result: dict, request_start: float) -> dict:
+def _build_cached_response(
+    cached_result: dict, request_start: float, scan_target: str = ""
+) -> dict:
     """Return cached payload with fresh retrieval timing metadata."""
     cached_result = apply_finding_aggregation(cached_result)
     retrieval_duration = max(round(time.perf_counter() - request_start, 3), 0.001)
@@ -64,6 +66,8 @@ def _build_cached_response(cached_result: dict, request_start: float) -> dict:
 
     payload = {
         **cached_result,
+        "source": cached_result.get("source", "repository_url"),
+        "scan_target": cached_result.get("scan_target") or scan_target,
         "cached": True,
         "cache_age_seconds": cache_age_seconds,
         "scan_duration": retrieval_duration,
@@ -81,7 +85,7 @@ def _build_cached_response(cached_result: dict, request_start: float) -> dict:
 
 @router.post("/scan")
 async def start_scan(request: ScanRequest, req: Request):
-    """Scan a GitHub repository for leaked secrets."""
+    """Scan a supported repository URL for leaked secrets."""
     client_ip = req.client.host if req.client else "unknown"
     enforce_rate_limit(client_ip)
 
@@ -102,7 +106,7 @@ async def start_scan(request: ScanRequest, req: Request):
     cached_result = scan_cache.get(validated_url)
     if cached_result:
         print(f"💨 Returning cached result for {validated_url[:50]}...")
-        return _build_cached_response(cached_result, request_start)
+        return _build_cached_response(cached_result, request_start, validated_url)
 
     print(f"🔍 Starting fresh scan for: {validated_url}")
 
@@ -150,6 +154,8 @@ async def start_scan(request: ScanRequest, req: Request):
                 )
 
         results["scan_time"] = round(metrics.get("duration", 0), 2)
+        results["source"] = "repository_url"
+        results["scan_target"] = validated_url
         results["cached"] = False
         results["scan_timestamp"] = time.time()
         results["ai_stats"] = ai_meta
@@ -206,7 +212,9 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
         stream_limit_notified = False
         try:
             if cached_result:
-                cached_payload = _build_cached_response(cached_result, request_start)
+                cached_payload = _build_cached_response(
+                    cached_result, request_start, validated_url
+                )
                 emit(
                     "progress",
                     {
@@ -299,6 +307,8 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
                         },
                     )
 
+                results["source"] = "repository_url"
+                results["scan_target"] = validated_url
                 emit("scan_result", {**results, "cached": False})
 
                 ai_meta = default_ai_meta()
@@ -325,6 +335,8 @@ async def stream_scan(req: Request, repo_url: str = Query(..., min_length=1)):
                     )
 
             results["scan_time"] = round(metrics.get("duration", 0), 2)
+            results["source"] = "repository_url"
+            results["scan_target"] = validated_url
             results["cached"] = False
             results["scan_timestamp"] = time.time()
             results["ai_stats"] = ai_meta

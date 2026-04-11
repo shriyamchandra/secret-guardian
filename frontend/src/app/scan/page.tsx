@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,7 @@ import {
 import { useScanStream } from "@/hooks/useScanStream";
 import {
   getErrorMessage,
-  isGithubUrl,
+  isSupportedRepoUrl,
   parseTimeoutMs,
   severityRank,
 } from "@/lib/scan-utils";
@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   Clipboard,
   FileJson,
+  FileText,
   Filter,
   FolderArchive,
   Github,
@@ -45,9 +46,8 @@ const EXPORT_REQUEST_TIMEOUT_MS = parseTimeoutMs(
   process.env.NEXT_PUBLIC_EXPORT_TIMEOUT_MS,
   30_000
 );
-const FINDINGS_PER_PAGE = 10;
+const FINDINGS_BATCH_SIZE = 25;
 
-type SeverityFilter = "ALL" | Severity;
 type SortOption = "risk-desc" | "count-desc" | "file-asc" | "file-desc";
 
 const getOccurrenceCount = (finding: Finding) =>
@@ -55,6 +55,53 @@ const getOccurrenceCount = (finding: Finding) =>
 
 const getPrimaryPath = (finding: Finding) =>
   finding.occurrences?.[0]?.file_path || finding.file_path || "";
+
+const DEFAULT_SEVERITY_SELECTION: Record<Severity, boolean> = {
+  CRITICAL: true,
+  HIGH: true,
+  MEDIUM: true,
+  LOW: true,
+};
+
+const getFileExtension = (path: string) => {
+  const fileName = path.split("/").pop() || "";
+  if (!fileName) return "(unknown)";
+
+  if (fileName.startsWith(".") && !fileName.slice(1).includes(".")) {
+    return fileName.toLowerCase();
+  }
+
+  const dotIndex = fileName.lastIndexOf(".");
+  if (dotIndex <= 0) {
+    return "(no ext)";
+  }
+  return fileName.slice(dotIndex).toLowerCase();
+};
+
+const getScannerSources = (finding: Finding) => {
+  if (finding.source_scanners?.length) {
+    return finding.source_scanners
+      .map((source) => source.toLowerCase())
+      .filter(Boolean);
+  }
+
+  const source = String(finding.scanner_source || "").toLowerCase();
+  return source ? [source] : [];
+};
+
+const getStableFindingKey = (finding: Finding) => {
+  const occurrenceKey = (finding.occurrences || [])
+    .map((occurrence) => `${occurrence.file_path}:${occurrence.line_number}`)
+    .join(",");
+
+  return [
+    finding.raw_value || "",
+    finding.secret_type || "",
+    finding.file_path || "",
+    String(finding.line_number || 0),
+    occurrenceKey,
+  ].join("|");
+};
 
 export default function ScanPage() {
   const [repoUrl, setRepoUrl] = useState("");
@@ -65,10 +112,15 @@ export default function ScanPage() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [findingSearch, setFindingSearch] = useState("");
-  const [severityFilter, setSeverityFilter] =
-    useState<SeverityFilter>("ALL");
+  const [selectedSeverities, setSelectedSeverities] = useState<
+    Record<Severity, boolean>
+  >({ ...DEFAULT_SEVERITY_SELECTION });
+  const [selectedFileTypes, setSelectedFileTypes] = useState<string[]>([]);
+  const [selectedScanners, setSelectedScanners] = useState<string[]>([]);
   const [sortOption, setSortOption] = useState<SortOption>("risk-desc");
-  const [currentPage, setCurrentPage] = useState(1);
+  const [visibleCount, setVisibleCount] = useState(FINDINGS_BATCH_SIZE);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
 
   const {
     scanResult,
@@ -96,11 +148,44 @@ export default function ScanPage() {
     [scanResult]
   );
 
+  const fileTypeOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(findings.map((finding) => getFileExtension(getPrimaryPath(finding))))
+      ).sort((a, b) => a.localeCompare(b)),
+    [findings]
+  );
+
+  const scannerOptions = useMemo(
+    () =>
+      Array.from(new Set(findings.flatMap((finding) => getScannerSources(finding))))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b)),
+    [findings]
+  );
+
   const filteredFindings = useMemo(() => {
     const query = findingSearch.trim().toLowerCase();
+    const selectedScannerSet = new Set(
+      selectedScanners.map((source) => source.toLowerCase())
+    );
 
     return findings.filter((finding) => {
-      if (severityFilter !== "ALL" && finding.severity !== severityFilter) {
+      const severity = (finding.severity || "LOW") as Severity;
+      if (!selectedSeverities[severity]) {
+        return false;
+      }
+
+      const fileType = getFileExtension(getPrimaryPath(finding));
+      if (selectedFileTypes.length > 0 && !selectedFileTypes.includes(fileType)) {
+        return false;
+      }
+
+      const sources = getScannerSources(finding);
+      if (
+        selectedScanners.length > 0 &&
+        !sources.some((source) => selectedScannerSet.has(source))
+      ) {
         return false;
       }
 
@@ -111,9 +196,6 @@ export default function ScanPage() {
       const searchable = [
         finding.file_path,
         finding.secret_type,
-        finding.leaked_line,
-        finding.code_snippet,
-        finding.raw_value,
         ...(finding.occurrences || []).map(
           (occurrence) => `${occurrence.file_path}:${occurrence.line_number}`
         ),
@@ -124,7 +206,13 @@ export default function ScanPage() {
 
       return searchable.includes(query);
     });
-  }, [findings, findingSearch, severityFilter]);
+  }, [
+    findings,
+    findingSearch,
+    selectedSeverities,
+    selectedFileTypes,
+    selectedScanners,
+  ]);
 
   const sortedFindings = useMemo(() => {
     const sorted = [...filteredFindings];
@@ -149,24 +237,52 @@ export default function ScanPage() {
     return sorted;
   }, [filteredFindings, sortOption]);
 
-  const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(sortedFindings.length / FINDINGS_PER_PAGE)),
-    [sortedFindings.length]
+  const visibleFindings = useMemo(
+    () => sortedFindings.slice(0, visibleCount),
+    [sortedFindings, visibleCount]
   );
 
-  const paginatedFindings = useMemo(() => {
-    const start = (currentPage - 1) * FINDINGS_PER_PAGE;
-    return sortedFindings.slice(start, start + FINDINGS_PER_PAGE);
-  }, [sortedFindings, currentPage]);
+  const hasMoreFindings = visibleCount < sortedFindings.length;
+  const visibleStart = visibleFindings.length > 0 ? 1 : 0;
+  const visibleEnd = visibleFindings.length;
+  const filteredNoiseCount =
+    scanResult?.heuristics_stats?.false_positives_filtered ??
+    findings.filter((finding) => finding.is_noise).length;
 
+  const loadMoreFindings = useCallback(() => {
+    if (!hasMoreFindings || isLoadingMore) {
+      return;
+    }
+
+    setIsLoadingMore(true);
+    window.setTimeout(() => {
+      setVisibleCount((prev) => Math.min(prev + FINDINGS_BATCH_SIZE, sortedFindings.length));
+      setIsLoadingMore(false);
+    }, 280);
+  }, [hasMoreFindings, isLoadingMore, sortedFindings.length]);
 
   useEffect(() => {
-    setCurrentPage(1);
-  }, [findingSearch, severityFilter, sortOption, totalFindings]);
+    setVisibleCount(Math.min(FINDINGS_BATCH_SIZE, sortedFindings.length));
+    setIsLoadingMore(false);
+  }, [sortedFindings.length]);
 
   useEffect(() => {
-    setCurrentPage((prev) => Math.min(prev, totalPages));
-  }, [totalPages]);
+    if (!loadMoreSentinelRef.current || !hasMoreFindings) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          loadMoreFindings();
+        }
+      },
+      { rootMargin: "280px 0px" }
+    );
+
+    observer.observe(loadMoreSentinelRef.current);
+    return () => observer.disconnect();
+  }, [hasMoreFindings, loadMoreFindings]);
 
   const headerSubtitle = useMemo(() => {
     if (error) return error;
@@ -179,7 +295,7 @@ export default function ScanPage() {
     if (scanMode === "upload") {
       return "Upload a ZIP file to scan for leaked secrets locally. No data stored.";
     }
-    return "Scan any public GitHub repository for leaked secrets. Read-only. No data stored.";
+    return "Scan public GitHub, GitLab, or Bitbucket repositories for leaked secrets. Read-only. No data stored.";
   }, [error, scanResult, totalFindings, scanMode]);
 
   const scanStatusMeta = useMemo(() => {
@@ -207,7 +323,7 @@ export default function ScanPage() {
         message:
           scanMode === "upload"
             ? "Upload a ZIP file and start scanning. Files are analyzed temporarily and not stored."
-            : "Paste a public GitHub repository URL and start scanning. The scan is read-only and temporary.",
+            : "Paste a public GitHub, GitLab, or Bitbucket repository URL and start scanning. The scan is read-only and temporary.",
       };
     }
 
@@ -297,9 +413,34 @@ export default function ScanPage() {
 
   const resetFindingControls = () => {
     setFindingSearch("");
-    setSeverityFilter("ALL");
+    setSelectedSeverities({ ...DEFAULT_SEVERITY_SELECTION });
+    setSelectedFileTypes([]);
+    setSelectedScanners([]);
     setSortOption("risk-desc");
-    setCurrentPage(1);
+    setVisibleCount(FINDINGS_BATCH_SIZE);
+  };
+
+  const toggleSeverity = (severity: Severity) => {
+    setSelectedSeverities((prev) => ({
+      ...prev,
+      [severity]: !prev[severity],
+    }));
+  };
+
+  const toggleFileType = (fileType: string) => {
+    setSelectedFileTypes((prev) =>
+      prev.includes(fileType)
+        ? prev.filter((value) => value !== fileType)
+        : [...prev, fileType]
+    );
+  };
+
+  const toggleScannerSource = (source: string) => {
+    setSelectedScanners((prev) =>
+      prev.includes(source)
+        ? prev.filter((value) => value !== source)
+        : [...prev, source]
+    );
   };
 
   const handleUploadScanClick = () => {
@@ -320,9 +461,9 @@ export default function ScanPage() {
   const handleUrlScanClick = () => {
     cancelScan();
     setActionStatus(null);
-    if (!isGithubUrl(repoUrl)) {
+    if (!isSupportedRepoUrl(repoUrl)) {
       setError(
-        "Please enter a valid GitHub repository URL (e.g., https://github.com/owner/repo)"
+        "Please enter a valid repository URL (e.g., https://github.com/owner/repo, https://gitlab.com/group/project, or https://bitbucket.org/workspace/repo)"
       );
       return;
     }
@@ -335,8 +476,40 @@ export default function ScanPage() {
     runUrlScan(repoUrl.trim(), apiUrl);
   };
 
+  const buildExportPayload = () => {
+    if (!scanResult) {
+      return null;
+    }
+
+    const source = scanResult.source || (scanMode === "upload" ? "upload" : "repository_url");
+    const target =
+      scanResult.scan_target ||
+      (source === "upload"
+        ? scanResult.filename || uploadedFile?.name || "Uploaded ZIP file"
+        : repoUrl.trim());
+
+    return {
+      findings,
+      repo_url: source === "upload" ? "" : target,
+      scan_duration: scanResult.scan_duration,
+      severity_breakdown: scanResult.severity_breakdown,
+      scan_source: source,
+      scan_target: target,
+      scanned_filename: scanResult.filename,
+      uploaded_file_size_mb: scanResult.file_size_mb,
+      scanners_used: scanResult.scanners_used || [],
+      files_affected: scanResult.files_affected || 0,
+      total_findings: scanResult.total_findings ?? findings.length,
+      displayed_findings: scanResult.displayed_findings ?? findings.length,
+      findings_truncated: Boolean(scanResult.findings_truncated),
+    };
+  };
+
   const exportJSON = async () => {
     if (!scanResult) return;
+    const payload = buildExportPayload();
+    if (!payload) return;
+
     setActionStatus(null);
     const controller = new AbortController();
     const timeoutId = window.setTimeout(
@@ -348,12 +521,7 @@ export default function ScanPage() {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/json`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          findings,
-          repo_url: repoUrl,
-          scan_duration: scanResult.scan_duration,
-          severity_breakdown: scanResult.severity_breakdown,
-        }),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -392,6 +560,9 @@ export default function ScanPage() {
 
   const copySummary = async () => {
     if (!scanResult) return;
+    const payload = buildExportPayload();
+    if (!payload) return;
+
     setActionStatus(null);
     const controller = new AbortController();
     const timeoutId = window.setTimeout(
@@ -405,12 +576,7 @@ export default function ScanPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            findings,
-            repo_url: repoUrl,
-            scan_duration: scanResult.scan_duration,
-            severity_breakdown: scanResult.severity_breakdown,
-          }),
+          body: JSON.stringify(payload),
           signal: controller.signal,
         }
       );
@@ -436,6 +602,110 @@ export default function ScanPage() {
           : e instanceof Error
             ? e.message
             : "Failed to copy summary",
+      });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
+
+  const exportLog = async () => {
+    if (!scanResult) return;
+    const payload = buildExportPayload();
+    if (!payload) return;
+
+    setActionStatus(null);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      EXPORT_REQUEST_TIMEOUT_MS
+    );
+
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(
+            await response.json().catch(() => ({})),
+            "Failed to export scan log"
+          )
+        );
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `secret-guardian-scan-log-${Date.now()}.log`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      setActionStatus({
+        type: "success",
+        message: "Scan log downloaded successfully.",
+      });
+    } catch (e: unknown) {
+      const isAbort = e instanceof DOMException && e.name === "AbortError";
+      setActionStatus({
+        type: "error",
+        message: isAbort
+          ? "Log export timed out."
+          : e instanceof Error
+            ? e.message
+            : "Failed to export scan log",
+      });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
+
+  const copyLog = async () => {
+    if (!scanResult) return;
+    const payload = buildExportPayload();
+    if (!payload) return;
+
+    setActionStatus(null);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      EXPORT_REQUEST_TIMEOUT_MS
+    );
+
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(
+            await response.json().catch(() => ({})),
+            "Failed to copy scan log"
+          )
+        );
+      }
+
+      await navigator.clipboard.writeText(await response.text());
+      setCopiedKey("log");
+      setTimeout(() => setCopiedKey(null), 2000);
+      setActionStatus({ type: "success", message: "Scan log copied to clipboard." });
+    } catch (e: unknown) {
+      const isAbort = e instanceof DOMException && e.name === "AbortError";
+      setActionStatus({
+        type: "error",
+        message: isAbort
+          ? "Copy log timed out."
+          : e instanceof Error
+            ? e.message
+            : "Failed to copy scan log",
       });
     } finally {
       window.clearTimeout(timeoutId);
@@ -496,10 +766,10 @@ export default function ScanPage() {
                   setActionStatus(null);
                 }}
                 className={`focus-ring flex-1 flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors ${scanMode === "url" ? "border border-zinc-700 bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:text-zinc-100"}`}
-                aria-label="Switch to GitHub repository scan"
+                aria-label="Switch to repository URL scan"
               >
                 <Github className="h-4 w-4" />
-                <span>GitHub URL</span>
+                <span>Repository URL</span>
               </button>
               <button
                 onClick={() => {
@@ -525,7 +795,7 @@ export default function ScanPage() {
                     </div>
                     <Input
                       type="url"
-                      placeholder="https://github.com/username/repository"
+                      placeholder="https://github.com/owner/repo (or gitlab.com / bitbucket.org)"
                       value={repoUrl}
                       onChange={(e) => setRepoUrl(e.target.value)}
                       className="h-12 rounded-md border-zinc-800 pl-12 text-base font-mono focus:border-orange-500 focus:ring-orange-500 sm:h-14"
@@ -694,7 +964,7 @@ export default function ScanPage() {
                 Ready to Scan
               </h3>
               <p className="mb-6 max-w-md text-zinc-400">
-                Enter a public GitHub repository URL above and start scanning to
+                Enter a public repository URL (GitHub, GitLab, or Bitbucket) above and start scanning to
                 detect leaked secrets.
               </p>
 
@@ -792,8 +1062,31 @@ export default function ScanPage() {
                 </div>
               )}
 
-              {totalFindings > 0 && (
+              {scanResult && (
                 <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+                  <Button
+                    variant="outline"
+                    onClick={exportLog}
+                    className="w-full gap-2 sm:w-auto"
+                  >
+                    <FileText className="h-4 w-4" /> Download Log
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={copyLog}
+                    className="w-full gap-2 sm:w-auto"
+                  >
+                    {copiedKey === "log" ? (
+                      <>
+                        <CheckCircle2 className="h-4 w-4 text-emerald-300" />
+                        Copied!
+                      </>
+                    ) : (
+                      <>
+                        <Clipboard className="h-4 w-4" /> Copy Log
+                      </>
+                    )}
+                  </Button>
                   <Button
                     variant="outline"
                     onClick={exportJSON}
@@ -829,81 +1122,134 @@ export default function ScanPage() {
                   Master Incidents
                 </h2>
                 <div className="text-sm font-mono text-zinc-500">
-                  Showing {paginatedFindings.length} of {sortedFindings.length} filtered incidents •{" "}
-                  {totalFindings} total master incidents
+                  {totalFindings} total incidents • {sortedFindings.length} after active filters
                 </div>
               </div>
 
-              <div className="panel-surface p-4">
-                <div className="grid gap-3 md:grid-cols-12">
-                  <div className="md:col-span-6">
-                    <label
-                      htmlFor="findings-search"
-                      className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500"
-                    >
-                      Search Findings
-                    </label>
-                    <div className="relative">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-                      <Input
-                        id="findings-search"
-                        placeholder="Filter by secret type, leaked value, or location"
-                        value={findingSearch}
-                        onChange={(event) => setFindingSearch(event.target.value)}
-                        className="h-10 pl-10 text-sm"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label
-                      htmlFor="severity-filter"
-                      className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500"
-                    >
-                      Severity
-                    </label>
-                    <select
-                      id="severity-filter"
-                      value={severityFilter}
-                      onChange={(event) =>
-                        setSeverityFilter(event.target.value as SeverityFilter)
-                      }
-                      className="focus-ring h-10 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 text-sm text-zinc-100"
-                    >
-                      <option value="ALL">All</option>
-                      <option value="CRITICAL">Critical</option>
-                      <option value="HIGH">High</option>
-                      <option value="MEDIUM">Medium</option>
-                      <option value="LOW">Low</option>
-                    </select>
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label
-                      htmlFor="sort-option"
-                      className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500"
-                    >
-                      Sort By
-                    </label>
-                    <div className="relative">
-                      <ArrowUpDown className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-                      <select
-                        id="sort-option"
-                        value={sortOption}
-                        onChange={(event) =>
-                          setSortOption(event.target.value as SortOption)
-                        }
-                        className="focus-ring h-10 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 pl-10 text-sm text-zinc-100"
+              <div className="grid gap-4 lg:grid-cols-12">
+                <aside className="panel-surface h-fit p-4 lg:sticky lg:top-4 lg:col-span-3">
+                  <div className="space-y-5">
+                    <div>
+                      <label
+                        htmlFor="findings-search"
+                        className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500"
                       >
-                        <option value="risk-desc">Highest Risk</option>
-                        <option value="count-desc">Most Locations</option>
-                        <option value="file-asc">File A-Z</option>
-                        <option value="file-desc">File Z-A</option>
-                      </select>
+                        Search
+                      </label>
+                      <div className="relative">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                        <Input
+                          id="findings-search"
+                          placeholder="Search file path or secret type"
+                          value={findingSearch}
+                          onChange={(event) => setFindingSearch(event.target.value)}
+                          className="h-10 pl-10 text-sm"
+                        />
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-end md:col-span-2">
+                    <div>
+                      <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+                        Severity
+                      </h3>
+                      <div className="space-y-2">
+                        {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as Severity[]).map(
+                          (severity) => (
+                            <label
+                              key={severity}
+                              className="flex items-center gap-2 text-sm text-zinc-300"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedSeverities[severity]}
+                                onChange={() => toggleSeverity(severity)}
+                                className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-orange-500 focus:ring-orange-500"
+                              />
+                              <span className="flex-1">{severity}</span>
+                              <span className="font-mono text-xs text-zinc-500">
+                                {severityCounts[severity]}
+                              </span>
+                            </label>
+                          )
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+                        File Type
+                      </h3>
+                      <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
+                        {fileTypeOptions.map((fileType) => (
+                          <label
+                            key={fileType}
+                            className="flex items-center gap-2 text-sm text-zinc-300"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedFileTypes.includes(fileType)}
+                              onChange={() => toggleFileType(fileType)}
+                              className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-orange-500 focus:ring-orange-500"
+                            />
+                            <span className="font-mono text-xs">{fileType}</span>
+                          </label>
+                        ))}
+                        {fileTypeOptions.length === 0 && (
+                          <p className="text-xs text-zinc-500">No file type data available.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+                        Scanner Source
+                      </h3>
+                      <div className="max-h-40 space-y-2 overflow-y-auto pr-1">
+                        {scannerOptions.map((source) => (
+                          <label
+                            key={source}
+                            className="flex items-center gap-2 text-sm text-zinc-300"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedScanners.includes(source)}
+                              onChange={() => toggleScannerSource(source)}
+                              className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-orange-500 focus:ring-orange-500"
+                            />
+                            <span className="font-mono text-xs uppercase">{source}</span>
+                          </label>
+                        ))}
+                        {scannerOptions.length === 0 && (
+                          <p className="text-xs text-zinc-500">No scanner source data available.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="sort-option"
+                        className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500"
+                      >
+                        Sort By
+                      </label>
+                      <div className="relative">
+                        <ArrowUpDown className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                        <select
+                          id="sort-option"
+                          value={sortOption}
+                          onChange={(event) =>
+                            setSortOption(event.target.value as SortOption)
+                          }
+                          className="focus-ring h-10 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 pl-10 text-sm text-zinc-100"
+                        >
+                          <option value="risk-desc">Highest Risk</option>
+                          <option value="count-desc">Most Locations</option>
+                          <option value="file-asc">File A-Z</option>
+                          <option value="file-desc">File Z-A</option>
+                        </select>
+                      </div>
+                    </div>
+
                     <Button
                       variant="outline"
                       className="w-full"
@@ -912,99 +1258,79 @@ export default function ScanPage() {
                       Clear Filters
                     </Button>
                   </div>
-                </div>
+                </aside>
 
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    className={`focus-ring rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${severityFilter === "ALL" ? "border-zinc-600 bg-zinc-800 text-zinc-100" : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700"}`}
-                    onClick={() => setSeverityFilter("ALL")}
-                  >
-                    All ({totalFindings})
-                  </button>
-                  <button
-                    className={`focus-ring rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${severityFilter === "CRITICAL" ? "border-red-700 bg-red-950/60 text-red-200" : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700"}`}
-                    onClick={() => setSeverityFilter("CRITICAL")}
-                  >
-                    Critical ({severityCounts.CRITICAL})
-                  </button>
-                  <button
-                    className={`focus-ring rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${severityFilter === "HIGH" ? "border-red-800 bg-red-950/50 text-red-300" : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700"}`}
-                    onClick={() => setSeverityFilter("HIGH")}
-                  >
-                    High ({severityCounts.HIGH})
-                  </button>
-                  <button
-                    className={`focus-ring rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${severityFilter === "MEDIUM" ? "border-orange-700 bg-orange-950/50 text-orange-200" : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700"}`}
-                    onClick={() => setSeverityFilter("MEDIUM")}
-                  >
-                    Medium ({severityCounts.MEDIUM})
-                  </button>
-                  <button
-                    className={`focus-ring rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${severityFilter === "LOW" ? "border-orange-800 bg-orange-950/40 text-orange-300" : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700"}`}
-                    onClick={() => setSeverityFilter("LOW")}
-                  >
-                    Low ({severityCounts.LOW})
-                  </button>
-                </div>
-              </div>
+                <section className="space-y-4 lg:col-span-9">
+                  <div className="sticky top-3 z-10 rounded-md border border-zinc-800 bg-zinc-900/95 px-4 py-3 backdrop-blur-sm">
+                    <p className="text-sm font-medium text-zinc-200">
+                      Showing {visibleStart}-{visibleEnd} of {sortedFindings.length} findings (Filtered {filteredNoiseCount} items as noise).
+                    </p>
+                  </div>
 
-              {sortedFindings.length === 0 ? (
-                <div className="panel-surface p-5 text-sm text-zinc-300">
-                  No findings match your current filters.
-                </div>
-              ) : (
-                <>
-                  {paginatedFindings.map((finding, index) => {
-                    const findingKey = [
-                      finding.raw_value || "",
-                      finding.secret_type || "",
-                      finding.file_path || "",
-                      String(finding.line_number || 0),
-                      String(index),
-                    ].join("|");
-
-                    return (
-                      <VulnerabilityCard
-                        key={findingKey}
-                        finding={finding}
-                        findingKey={findingKey}
-                        isRevealed={revealedSecrets.has(findingKey)}
-                        copiedKey={copiedKey}
-                        toggleRevealSecret={toggleRevealSecret}
-                        copyText={copyText}
-                      />
-                    );
-                  })}
-
-                  {totalPages > 1 && (
-                    <div className="panel-surface mt-2 flex flex-col items-start justify-between gap-3 p-4 sm:flex-row sm:items-center">
-                      <div className="text-sm text-zinc-300">
-                        Page <strong>{currentPage}</strong> of <strong>{totalPages}</strong>
-                      </div>
-                      <div className="flex w-full gap-2 sm:w-auto">
-                        <Button
-                          variant="outline"
-                          className="flex-1 sm:flex-none"
-                          onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
-                          disabled={currentPage === 1}
-                        >
-                          Previous
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="flex-1 sm:flex-none"
-                          onClick={() =>
-                            setCurrentPage((prev) => Math.min(totalPages, prev + 1))
-                          }
-                          disabled={currentPage === totalPages}
-                        >
-                          Next
-                        </Button>
-                      </div>
+                  {sortedFindings.length === 0 ? (
+                    <div className="panel-surface p-5 text-sm text-zinc-300">
+                      No findings match your current filters.
                     </div>
+                  ) : (
+                    <>
+                      {visibleFindings.map((finding) => {
+                        const findingKey = getStableFindingKey(finding);
+
+                        return (
+                          <VulnerabilityCard
+                            key={findingKey}
+                            finding={finding}
+                            findingKey={findingKey}
+                            isRevealed={revealedSecrets.has(findingKey)}
+                            copiedKey={copiedKey}
+                            toggleRevealSecret={toggleRevealSecret}
+                            copyText={copyText}
+                          />
+                        );
+                      })}
+
+                      {isLoadingMore &&
+                        Array.from({ length: 3 }).map((_, index) => (
+                          <div
+                            key={`findings-skeleton-${index}`}
+                            className="overflow-hidden rounded-md border border-zinc-800 bg-zinc-900/40 animate-pulse"
+                          >
+                            <div className="h-12 border-b border-zinc-800 bg-zinc-800/40" />
+                            <div className="space-y-3 p-5">
+                              <div className="h-4 w-1/3 rounded bg-zinc-800/60" />
+                              <div className="h-14 rounded bg-zinc-800/45" />
+                              <div className="h-20 rounded bg-zinc-800/35" />
+                            </div>
+                          </div>
+                        ))}
+
+                      <div ref={loadMoreSentinelRef} className="h-4" />
+
+                      <div className="panel-surface mt-2 flex flex-col items-start justify-between gap-3 p-4 sm:flex-row sm:items-center">
+                        <div className="text-sm text-zinc-300">
+                          Loaded <strong>{visibleFindings.length}</strong> of <strong>{sortedFindings.length}</strong> findings
+                        </div>
+                        <div className="flex w-full gap-2 sm:w-auto">
+                          {hasMoreFindings ? (
+                            <Button
+                              variant="outline"
+                              className="w-full sm:w-auto"
+                              onClick={loadMoreFindings}
+                              disabled={isLoadingMore}
+                            >
+                              {isLoadingMore ? "Loading..." : "Load More"}
+                            </Button>
+                          ) : (
+                            <span className="rounded-md border border-emerald-800 bg-emerald-950/35 px-3 py-2 text-xs font-medium text-emerald-300">
+                              All filtered findings loaded
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </>
                   )}
-                </>
-              )}
+                </section>
+              </div>
             </div>
           )}
         </div>

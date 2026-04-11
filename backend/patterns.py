@@ -69,6 +69,10 @@ SECRET_PATTERNS = {
     "MongoDB Connection String": re.compile(r"mongodb(\+srv)?://[^\s]+"),
     "PostgreSQL Connection": re.compile(r"postgres(ql)?://[^\s]+"),
     "MySQL Connection": re.compile(r"mysql://[^\s]+"),
+    # Hardcoded database/service credentials in config-like assignments
+    "DB_CREDENTIAL": re.compile(
+        r"(?i)(?:\b|['\"])(?:db_pass|db_password|mysql_password|postgres_password|postgresql_password|db_user)(?:\b|['\"])\s*(?:\]\s*)?(?:=|:|=>)\s*(?:[^\r\n]{0,120}\?\s*:\s*)?['\"]((?!\s*\{\{|\s*\{)[^'\"\r\n]{4,})['\"]"
+    ),
     # JWT
     "JWT Token": re.compile(
         r"\b(eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\b"
@@ -221,7 +225,10 @@ def is_likely_false_positive(text: str, context: str = "") -> bool:
     # Explicit placeholders in context
     if re.search(r"\*{2,}", combined):
         return True
-    if re.search(r"(?i)(<password>|<secret>|<token>|your[_-]?(password|secret|token|key))", combined):
+    if re.search(
+        r"(?i)(<password>|<secret>|<token>|your[_-]?(password|secret|token|key))",
+        combined,
+    ):
         return True
 
     # Pure variable placeholders (no hardcoded values)

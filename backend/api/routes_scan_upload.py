@@ -174,6 +174,7 @@ async def scan_uploaded_file(
 
         results["scan_time"] = round(time.time() - start_time, 2)
         results["source"] = "upload"
+        results["scan_target"] = file.filename
         results["filename"] = file.filename
         results["file_size_mb"] = round(file_size / 1024 / 1024, 2)
         results["ai_stats"] = ai_meta
@@ -383,6 +384,7 @@ async def stream_uploaded_file_scan(
 
             results["scan_time"] = round(time.time() - start_time, 2)
             results["source"] = "upload"
+            results["scan_target"] = file.filename
             results["filename"] = file.filename
             results["file_size_mb"] = round(file_size / 1024 / 1024, 2)
             results["ai_stats"] = ai_meta
