@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 try:
@@ -176,7 +176,13 @@ async def export_summary(request: ExportRequest):
 
 
 @router.post("/export/log")
-async def export_scan_log(request: ExportRequest):
+async def export_scan_log(
+    request: ExportRequest,
+    include_raw: bool = Query(
+        False,
+        description="DEBUG: include raw secret values and code snippets (for false-positive triage).",
+    ),
+):
     """Export scan results as structured plain-text log file."""
     severity = request.severity_breakdown or {}
     scan_source_label = _resolve_scan_source_label(request)
@@ -193,6 +199,15 @@ async def export_scan_log(request: ExportRequest):
         f"Source: {scan_source_label}",
         f"Target: {scan_target}",
     ]
+
+    if include_raw:
+        lines.extend(
+            [
+                "",
+                "⚠️  DEBUG MODE: raw secret values included for false-positive triage.",
+                "⚠️  DO NOT share this file externally — treat it like the secrets themselves.",
+            ]
+        )
 
     if request.scanned_filename:
         lines.append(f"Uploaded Filename: {request.scanned_filename}")
@@ -255,9 +270,29 @@ async def export_scan_log(request: ExportRequest):
                     f"  Scanner Source(s): {source_text}",
                     f"  Occurrences: {occurrence_count}",
                     f"  Value (masked): {masked_value}",
-                    "  Locations:",
                 ]
             )
+
+            if include_raw:
+                raw_display = raw_value if raw_value else "N/A"
+                snippet = str(
+                    finding.get("code_snippet")
+                    or finding.get("leaked_line")
+                    or ""
+                ).strip()
+                lines.append(f"  Value (RAW): {raw_display}")
+                if snippet:
+                    lines.append(f"  Code Snippet: {snippet}")
+                threat_ctx = finding.get("threat_context")
+                if isinstance(threat_ctx, dict):
+                    exploitability = threat_ctx.get("exploitability")
+                    if exploitability:
+                        lines.append(f"  Exploitability: {exploitability}")
+                    confidence_val = threat_ctx.get("confidence")
+                    if confidence_val is not None:
+                        lines.append(f"  Threat Confidence: {confidence_val}")
+
+            lines.append("  Locations:")
 
             lines.extend(_finding_location_lines(finding))
 

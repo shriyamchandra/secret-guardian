@@ -33,6 +33,13 @@ except Exception:
     genai = None
     types = None
 
+try:
+    from qwen_fixer import get_qwen_fix, is_qwen_available, QWEN_TIMEOUT as _QWEN_TIMEOUT
+except Exception:
+    get_qwen_fix = None  # type: ignore
+    is_qwen_available = lambda: False  # type: ignore
+    _QWEN_TIMEOUT = 120
+
 
 API_KEY = os.getenv("GOOGLE_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
@@ -162,6 +169,7 @@ def analyze_threat_context(finding: Dict[str, Any]) -> Dict[str, Any]:
     ).lower()
     secret_type = str(finding.get("secret_type") or "").lower()
     severity = str(finding.get("severity") or "HIGH")
+    noise_type = str(finding.get("noise_type") or "").upper()
     try:
         entropy = float(finding.get("entropy", 0) or 0)
     except (TypeError, ValueError):
@@ -170,6 +178,26 @@ def analyze_threat_context(finding: Dict[str, Any]) -> Dict[str, Any]:
     context_notes = []
     risk_factors = []
     mitigating_factors = []
+
+    # === Honor upstream heuristic noise grading ===
+    # Heuristics already did strict path + value analysis. If a finding was tagged
+    # as fixture/documentation/test noise, we must not escalate it to EXPLOITABLE_NOW.
+    FIXTURE_NOISE_TYPES = {"FIXTURE_DATA", "FIXTURE_VALUE", "DOCUMENTATION_TEMPLATE"}
+    TEST_NOISE_TYPES = {"TEST_FIXTURE"}
+
+    if noise_type in FIXTURE_NOISE_TYPES:
+        return {
+            "risk_level": "INFO",
+            "exploitability": "LIKELY_FALSE_POSITIVE",
+            "context_notes": [
+                "✅ Heuristic flagged as fixture/placeholder — not an exploitable secret.",
+                f"📁 File path / value matched noise class: {noise_type}",
+            ],
+            "confidence": 0.8,
+            "recommended_action": "REVIEW",
+            "risk_factors": [],
+            "mitigating_factors": [f"Upstream heuristic: {noise_type}"],
+        }
 
     # === Check for development/localhost indicators ===
     for pattern in ThreatContext.DEV_INDICATORS:
@@ -180,11 +208,28 @@ def analyze_threat_context(finding: Dict[str, Any]) -> Dict[str, Any]:
             )
 
     # === Check for test file patterns ===
+    matched_test_pattern = None
     for pattern in ThreatContext.TEST_FILE_PATTERNS:
         if re.search(pattern, file_path, re.IGNORECASE):
-            mitigating_factors.append(f"File appears to be test/example: '{pattern}'")
-            context_notes.append("📁 File path suggests test/example file")
+            matched_test_pattern = pattern
+            # Test file paths are a dominant mitigating signal — count twice so a
+            # single high-value secret type cannot flip the finding to EXPLOITABLE_NOW.
+            mitigating_factors.append(
+                f"File appears to be test/example: '{pattern}' (dominant)"
+            )
+            mitigating_factors.append(
+                "Test fixtures are intentionally planted and non-exploitable"
+            )
+            context_notes.append("📁 File path strongly suggests test/example file")
             break
+
+    # The upstream heuristic also marks *_test.* files as TEST_FIXTURE noise.
+    # When we see that tag, treat the test-file signal as even stronger.
+    if noise_type in TEST_NOISE_TYPES and not matched_test_pattern:
+        mitigating_factors.append("Upstream heuristic marked TEST_FIXTURE (dominant)")
+        mitigating_factors.append("Test fixtures are intentionally planted")
+        context_notes.append("📁 Heuristic flagged this file as test/fixture")
+        matched_test_pattern = "noise_type:TEST_FIXTURE"
 
     # === Check for placeholder values ===
     for pattern in ThreatContext.PLACEHOLDER_PATTERNS:
@@ -251,7 +296,9 @@ def analyze_threat_context(finding: Dict[str, Any]) -> Dict[str, Any]:
             break
 
     # === Check entropy (randomness) ===
-    if entropy and entropy > 4.5:
+    # Only count high entropy as a risk factor when we're NOT in a test file —
+    # developers deliberately use high-entropy fixture values to exercise detectors.
+    if entropy and entropy > 4.5 and not matched_test_pattern:
         risk_factors.append("High entropy suggests real secret")
         context_notes.append(
             f"🎲 High entropy ({entropy:.2f}) suggests this is a real secret, not a placeholder"
@@ -263,7 +310,17 @@ def analyze_threat_context(finding: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     # === Determine exploitability ===
-    if len(mitigating_factors) >= 2:
+    # Test-file findings can never be EXPLOITABLE_NOW — they're fixtures by
+    # construction. Cap at BAD_PRACTICE and downgrade to LIKELY_FALSE_POSITIVE
+    # when additional mitigators pile on.
+    if matched_test_pattern:
+        if len(mitigating_factors) >= 3:
+            exploitability = "LIKELY_FALSE_POSITIVE"
+            confidence = 0.75
+        else:
+            exploitability = "BAD_PRACTICE"
+            confidence = 0.7
+    elif len(mitigating_factors) >= 2:
         exploitability = "LIKELY_FALSE_POSITIVE"
         confidence = 0.6
     elif len(mitigating_factors) >= 1 and len(risk_factors) == 0:
@@ -647,6 +704,23 @@ Keep the response professional, concise, and appropriately calibrated to the act
 # Per-scan budget (configurable via env)
 MAX_AI_CALLS_PER_SCAN = int(os.getenv("MAX_AI_CALLS_PER_SCAN", "5"))
 AI_CALL_TIMEOUT = int(os.getenv("AI_CALL_TIMEOUT", "30"))
+# Separate budget for local Qwen (cheap/free → higher default)
+MAX_QWEN_CALLS_PER_SCAN = int(os.getenv("MAX_QWEN_CALLS_PER_SCAN", "10"))
+QWEN_CALL_TIMEOUT = int(os.getenv("QWEN_CALL_TIMEOUT", str(_QWEN_TIMEOUT + 10)))
+
+_TERMINAL_ERROR_KEYWORDS = (
+    "429", "quota", "rate limit", "503", "unavailable",
+    "404", "not_found", "not found", "model", "unsupported",
+    "permission denied", "401", "403", "api key",
+)
+
+
+def _is_terminal_error(result: Dict[str, Any]) -> bool:
+    """Detect Gemini errors that warrant circuit-breaking the provider for the scan."""
+    if result.get("_terminal_error"):
+        return True
+    err = str(result.get("error", "")).lower()
+    return any(k in err for k in _TERMINAL_ERROR_KEYWORDS)
 
 
 def _finding_dedup_key(f: Dict[str, Any]) -> str:
@@ -743,17 +817,26 @@ async def run_ai_remediation(
     Orchestrate AI calls across a list of findings with:
     - Severity gating (skip LOW / false positives)
     - Deduplication (same secret+context → one call)
-    - Per-scan budget cap
-    - Circuit-breaker on quota/model errors
+    - Gemini primary with per-scan budget + circuit-breaker on quota/model errors
+    - Qwen (local Ollama) fallback when Gemini fails or is exhausted
+    - Deterministic fallback when both AI providers fail
     """
     import asyncio
 
-    budget_remaining = MAX_AI_CALLS_PER_SCAN
-    circuit_broken = False
+    gemini_budget = MAX_AI_CALLS_PER_SCAN
+    qwen_budget = MAX_QWEN_CALLS_PER_SCAN
+    gemini_broken = not (API_KEY and genai)
+    qwen_broken = not (get_qwen_fix and is_qwen_available())
     dedup_cache: Dict[str, Dict[str, Any]] = {}
-    ai_calls_made = 0
+    ai_calls_made = 0       # Gemini successes
+    ai_calls_qwen = 0       # Qwen fallback successes
     ai_calls_skipped = 0
     ai_calls_deduped = 0
+
+    if qwen_broken:
+        print("ℹ️ Qwen fallback unavailable (Ollama not running or model not pulled).")
+    else:
+        print("✅ Qwen fallback ready (local Ollama).")
 
     def notify_processed(index: int, finding: Dict[str, Any]) -> None:
         if not on_finding_processed:
@@ -763,11 +846,38 @@ async def run_ai_remediation(
         except Exception as cb_exc:
             print(f"⚠️ AI progress callback failed at index {index}: {cb_exc}")
 
+    async def _try_qwen(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Call Qwen, returning a success dict or None on error."""
+        nonlocal qwen_broken, qwen_budget
+        if qwen_broken or qwen_budget <= 0:
+            return None
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(get_qwen_fix, f),
+                timeout=QWEN_CALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            print(f"⚡ Qwen call timed out after {QWEN_CALL_TIMEOUT}s.")
+            return None
+        except Exception as exc:
+            print(f"⚡ Qwen call failed: {exc}")
+            return None
+
+        qwen_budget -= 1
+        if result.get("_terminal_error"):
+            print(f"⚡ Qwen terminal error — disabling Qwen for this scan: {result.get('error')}")
+            qwen_broken = True
+            return None
+        if "suggestion" not in result:
+            print(f"⚡ Qwen returned error: {result.get('error')}")
+            return None
+        return result
+
     for index, f in enumerate(findings):
         needs_ai = should_call_ai(f)
         key = f"{_finding_dedup_key(f)}|needs_ai:{int(needs_ai)}"
 
-        # 1. Check dedup cache
+        # 1. Dedup cache
         if key in dedup_cache:
             cached = copy.deepcopy(dedup_cache[key])
             cached["ai_status"] = "deduped"
@@ -786,75 +896,76 @@ async def run_ai_remediation(
             notify_processed(index, f)
             continue
 
-        # 3. Budget check
-        if budget_remaining <= 0 or circuit_broken:
+        result: Optional[Dict[str, Any]] = None
+
+        # 3. Try Gemini (primary)
+        gemini_available = not gemini_broken and gemini_budget > 0
+        if gemini_available:
+            try:
+                gemini_result = await asyncio.wait_for(
+                    asyncio.to_thread(get_gemini_fix, f),
+                    timeout=AI_CALL_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                gemini_result = {"error": f"Gemini call timed out after {AI_CALL_TIMEOUT}s"}
+            except Exception as exc:
+                gemini_result = {"error": f"Gemini call failed: {exc}"}
+
+            gemini_budget -= 1
+
+            if _is_terminal_error(gemini_result):
+                print(
+                    "⚡ Gemini terminal error — circuit-breaking Gemini, switching to Qwen fallback."
+                )
+                gemini_broken = True
+            elif "suggestion" in gemini_result:
+                gemini_result.pop("_terminal_error", None)
+                gemini_result["ai_status"] = "success"
+                gemini_result["ai_generated"] = True
+                gemini_result["ai_provider"] = "gemini"
+                gemini_result["ai_model"] = GEMINI_MODEL
+                result = gemini_result
+                ai_calls_made += 1
+            else:
+                print(f"⚡ Gemini returned non-terminal error — trying Qwen: {gemini_result.get('error')}")
+
+        # 4. Qwen fallback
+        if result is None:
+            qwen_result = await _try_qwen(f)
+            if qwen_result is not None:
+                qwen_result["ai_status"] = "success_fallback"
+                qwen_result["ai_generated"] = True
+                result = qwen_result
+                ai_calls_qwen += 1
+
+        # 5. Deterministic fallback
+        if result is None:
             fallback = _deterministic_fallback(f)
-            fallback["ai_status"] = (
-                "budget_exhausted" if not circuit_broken else "circuit_broken"
-            )
+            if gemini_broken and qwen_broken:
+                fallback["ai_status"] = "all_providers_failed"
+            elif gemini_broken:
+                fallback["ai_status"] = "circuit_broken"
+            elif gemini_budget <= 0 and qwen_budget <= 0:
+                fallback["ai_status"] = "budget_exhausted"
+            else:
+                fallback["ai_status"] = "error"
             f["ai_fix"] = fallback
             dedup_cache[key] = fallback
             ai_calls_skipped += 1
             notify_processed(index, f)
             continue
-
-        # 4. Make AI call with timeout
-        try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(get_gemini_fix, f),
-                timeout=AI_CALL_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            result = {"error": f"AI call timed out after {AI_CALL_TIMEOUT}s"}
-        except Exception as exc:
-            result = {"error": f"AI call failed: {exc}"}
-
-        # 5. Check for quota/model errors → circuit break
-        if result.get("_terminal_error") or any(
-            k in str(result.get("error", "")).lower()
-            for k in [
-                "429",
-                "quota",
-                "rate limit",
-                "503",
-                "unavailable",
-                "404",
-                "not_found",
-                "not found",
-                "model",
-                "unsupported",
-                "401",
-                "403",
-                "api key",
-            ]
-        ):
-            print(
-                "⚡ AI quota/model error detected — circuit-breaking remaining AI calls for this scan."
-            )
-            circuit_broken = True
-            fallback = _deterministic_fallback(f)
-            fallback["ai_status"] = "circuit_broken"
-            f["ai_fix"] = fallback
-            dedup_cache[key] = fallback
-            ai_calls_skipped += 1
-            notify_processed(index, f)
-            continue
-
-        # Clean internal flag
-        result.pop("_terminal_error", None)
-        result["ai_status"] = "success" if "suggestion" in result else "error"
-        result["ai_generated"] = "suggestion" in result
 
         f["ai_fix"] = result
         dedup_cache[key] = result
-        ai_calls_made += 1
-        budget_remaining -= 1
         notify_processed(index, f)
 
     return {
         "ai_calls_made": ai_calls_made,
+        "ai_calls_qwen": ai_calls_qwen,
         "ai_calls_skipped": ai_calls_skipped,
         "ai_calls_deduped": ai_calls_deduped,
         "budget_limit": MAX_AI_CALLS_PER_SCAN,
-        "circuit_broken": circuit_broken,
+        "qwen_budget_limit": MAX_QWEN_CALLS_PER_SCAN,
+        "circuit_broken": gemini_broken,
+        "qwen_available": not qwen_broken,
     }

@@ -24,10 +24,13 @@ def default_ai_meta() -> dict:
     """Return a fresh metadata payload for AI orchestration stats."""
     return {
         "ai_calls_made": 0,
+        "ai_calls_qwen": 0,
         "ai_calls_skipped": 0,
         "ai_calls_deduped": 0,
         "budget_limit": MAX_AI_CALLS_PER_SCAN,
+        "qwen_budget_limit": 0,
         "circuit_broken": False,
+        "qwen_available": False,
     }
 
 

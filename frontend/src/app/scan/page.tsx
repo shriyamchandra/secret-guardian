@@ -677,12 +677,15 @@ export default function ScanPage() {
     );
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/log`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/export/log?include_raw=true`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        }
+      );
 
       if (!response.ok) {
         throw new Error(
@@ -696,7 +699,10 @@ export default function ScanPage() {
       await navigator.clipboard.writeText(await response.text());
       setCopiedKey("log");
       setTimeout(() => setCopiedKey(null), 2000);
-      setActionStatus({ type: "success", message: "Scan log copied to clipboard." });
+      setActionStatus({
+        type: "success",
+        message: "Scan log copied (with raw values for debugging).",
+      });
     } catch (e: unknown) {
       const isAbort = e instanceof DOMException && e.name === "AbortError";
       setActionStatus({

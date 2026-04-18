@@ -398,3 +398,22 @@ We improved trust signaling in the all-clear state so users can see the scanner 
 
 
 When I first scanned the OpenClaw repository, the raw output returned 9,000+ false positives, which literally crashed my React frontend because the DOM couldn't handle that many nodes. I solved this in two stages: First, I built a Python heuristic engine that reduced the noise from 9,000 to 0 using signature and entropy filtering. Second, I refactored the frontend to use a paginated, stateful layout with skeleton loaders, ensuring that even if a future scan returns high-volume data, the UI remains responsive and 'Senior-level' snappy."
+
+### 35. A local dev server kept refreshing continuously. How did you debug and fix it?
+I treated it as a multi-layer reliability issue rather than a single frontend bug.
+
+- **Symptom:** Browser appeared to refresh in a fast loop and startup status looked inconsistent.
+- **Root cause 1 (frontend):** an unmanaged stale Next.js process and Turbopack panic path were causing unstable dev behavior. We standardized local startup to webpack mode and restored managed process control.
+- **Root cause 2 (backend):** the Python virtual environment had stale absolute paths after a directory rename, so `uvicorn` wrappers pointed to a non-existent interpreter.
+- **Root cause 3 (orchestration):** `start.sh` treated any TCP activity as "port in use". CLOSE_WAIT sockets from the browser were falsely interpreted as active listeners, so frontend startup was skipped.
+
+**Fixes shipped:**
+
+- Reworked backend launch to use `venv/bin/python -m uvicorn` (path-robust) instead of fragile wrapper binaries.
+- Reworked dependency install calls to `python -m pip` for the same reason.
+- Added startup health checks so script reports failure when services die immediately instead of printing false success.
+- Hardened port checks to LISTEN-only sockets (`lsof ... -sTCP:LISTEN -t`) and improved owner reporting.
+- Added a `restart` action and clearer status/log messaging for faster local incident recovery.
+
+**Outcome:**
+Both frontend and backend now start deterministically under script control, and local refresh-loop behavior caused by crash/restart thrash is eliminated.

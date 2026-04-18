@@ -263,7 +263,7 @@ def run_gitleaks(
 
                 finding = Finding(
                     secret_type=secret_type,
-                    file_path=item.get("File", ""),
+                    file_path=_normalize_finding_path(item.get("File", "")),
                     line_number=item.get("StartLine", 0),
                     confidence="HIGH",  # Gitleaks has strong patterns
                     entropy=round(entropy, 2),
@@ -369,7 +369,7 @@ def run_trufflehog(
 
                 finding = Finding(
                     secret_type=secret_type,
-                    file_path=source_metadata.get("file", ""),
+                    file_path=_normalize_finding_path(source_metadata.get("file", "")),
                     line_number=source_metadata.get("line", 0),
                     confidence="HIGH",
                     entropy=round(entropy, 2),
@@ -410,6 +410,27 @@ def run_trufflehog(
     return findings
 
 
+def _normalize_finding_path(path: str) -> str:
+    """Strip temp directory prefixes to get a canonical relative path.
+
+    External scanners report findings with absolute paths like:
+        /var/folders/.../T/secret-guardian-XXXX/pkg/file.go
+    while the regex scanner uses relative paths like:
+        pkg/file.go
+
+    Normalising both to the relative form lets dedup merge them correctly
+    and prevents inflated occurrence counts.
+    """
+    import re as _re
+
+    normalized = (path or "").replace("\\", "/").strip("/")
+    # Strip everything up to and including the secret-guardian-* temp dir
+    normalized = _re.sub(
+        r"^.*?secret-guardian-[^/]+/", "", normalized
+    )
+    return normalized.strip("/")
+
+
 def deduplicate_findings(findings: List[Finding]) -> List[Finding]:
     """
     Remove duplicate findings across scanners.
@@ -426,7 +447,7 @@ def deduplicate_findings(findings: List[Finding]) -> List[Finding]:
     seen: Dict[tuple, Finding] = {}
 
     for finding in findings:
-        file_key = (finding.file_path or "").strip("/")
+        file_key = _normalize_finding_path(finding.file_path)
         secret_type_key = (finding.secret_type or "unknown").lower().replace(" ", "_")
         key = (
             file_key,
