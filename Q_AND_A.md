@@ -417,3 +417,14 @@ I treated it as a multi-layer reliability issue rather than a single frontend bu
 
 **Outcome:**
 Both frontend and backend now start deterministically under script control, and local refresh-loop behavior caused by crash/restart thrash is eliminated.
+
+### 36. We accidentally pushed local workspace artifacts to GitHub. How did we cleanly recover?
+I handled it as a repository hygiene incident with two goals: remove non-runtime artifacts from the tracked tree, and prevent recurrence.
+
+- **What went wrong:** a broad `git add -A` included local-only workspace material (`.claude/worktrees/*`), runtime PID files (`.runtime/*.pid`), and an accidental root lockfile.
+- **Recovery action:** removed those artifacts from tracking and pushed a cleanup commit so `main` now contains only project-relevant source/config/docs.
+- **Prevention action:** updated `.gitignore` to permanently exclude `.claude/`, `.runtime/`, `.logs/`, and root-level `package-lock.json`.
+- **Operational takeaway:** local process/runtime state should be reproducible via scripts, never versioned. Keep Git focused on deterministic build/run inputs.
+
+**Outcome:**
+Repository state is now clean for contributors, startup scripts still work, and future commits are guarded against the same artifact leak pattern.
