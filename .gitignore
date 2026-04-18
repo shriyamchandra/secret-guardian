@@ -117,6 +117,12 @@ temp/
 *.bak
 coverage/
 .nyc_output/
+.logs/
+.runtime/
+.claude/
+
+# Root-level accidental lockfile (frontend lockfile should stay tracked)
+/package-lock.json
 
 # =============================================================================
 # Secret Guardian Specific
