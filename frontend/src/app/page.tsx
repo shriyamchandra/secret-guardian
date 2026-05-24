@@ -368,7 +368,7 @@ const HeroSection = () => (
           <h1 className="mb-5 font-sans text-4xl font-black leading-tight tracking-tight text-zinc-100 md:text-5xl xl:text-6xl">
             Stop Leaking
             <br />
-            <span className="bg-gradient-to-r from-orange-300 via-orange-200 to-emerald-300 bg-clip-text text-transparent">
+            <span className="text-orange-400">
               API Keys & Secrets
             </span>
           </h1>
