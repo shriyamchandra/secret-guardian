@@ -103,8 +103,58 @@ const getStableFindingKey = (finding: Finding) => {
   ].join("|");
 };
 
+const PLACEHOLDERS = [
+  "https://github.com/facebook/react",
+  "https://github.com/vercel/next.js",
+  "https://github.com/django/django",
+  "https://github.com/golang/go",
+  "https://github.com/rails/rails",
+  "https://github.com/kubernetes/kubernetes"
+];
+
 export default function ScanPage() {
   const [repoUrl, setRepoUrl] = useState("");
+  const [placeholderText, setPlaceholderText] = useState("");
+
+  useEffect(() => {
+    let isMounted = true;
+    let placeholderIndex = 0;
+    let charIndex = 0;
+    let typing = true;
+    let timeoutId: NodeJS.Timeout;
+
+    const tick = () => {
+      if (!isMounted) return;
+      const currentFullText = PLACEHOLDERS[placeholderIndex];
+      if (typing) {
+        setPlaceholderText(currentFullText.slice(0, charIndex + 1));
+        charIndex++;
+        if (charIndex >= currentFullText.length) {
+          typing = false;
+          timeoutId = setTimeout(tick, 2000); // Pause on complete string
+        } else {
+          timeoutId = setTimeout(tick, 45); // Typing speed
+        }
+      } else {
+        setPlaceholderText(currentFullText.slice(0, charIndex - 1));
+        charIndex--;
+        if (charIndex <= 0) {
+          typing = true;
+          placeholderIndex = (placeholderIndex + 1) % PLACEHOLDERS.length;
+          timeoutId = setTimeout(tick, 500); // Pause before next string
+        } else {
+          timeoutId = setTimeout(tick, 20); // Erasing speed
+        }
+      }
+    };
+
+    timeoutId = setTimeout(tick, 500);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutId);
+    };
+  }, []);
   const [actionStatus, setActionStatus] = useState<ActionStatus | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
@@ -801,7 +851,7 @@ export default function ScanPage() {
                     </div>
                     <Input
                       type="url"
-                      placeholder="https://github.com/owner/repo (or gitlab.com / bitbucket.org)"
+                      placeholder={placeholderText || "https://github.com/owner/repo"}
                       value={repoUrl}
                       onChange={(e) => setRepoUrl(e.target.value)}
                       className="h-12 rounded-md border-zinc-800 pl-12 text-base font-mono focus:border-orange-500 focus:ring-orange-500 sm:h-14"
@@ -853,7 +903,13 @@ export default function ScanPage() {
                   onDragLeave={handleDrag}
                   onDragOver={handleDrag}
                   onDrop={handleDrop}
-                  className={`relative rounded-md border-2 border-dashed p-8 text-center transition-colors ${dragActive ? "border-orange-500 bg-orange-950/25" : uploadedFile ? "border-emerald-700 bg-emerald-950/20" : "border-zinc-800 bg-zinc-900/50 hover:border-zinc-700"}`}
+                  className={`relative rounded-xl border-2 border-dashed p-10 text-center transition-all duration-300 ${
+                    dragActive
+                      ? "border-orange-500 bg-orange-950/30 ring-4 ring-orange-500/10 scale-[0.99]"
+                      : uploadedFile
+                      ? "border-emerald-600 bg-emerald-950/20"
+                      : "border-zinc-800 bg-zinc-900/40 hover:border-orange-500/40 hover:bg-zinc-900/60"
+                  }`}
                 >
                   {uploadedFile ? (
                     <div className="flex flex-col items-center">
@@ -963,15 +1019,23 @@ export default function ScanPage() {
         <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
           {!loading && !scanResult && !error && (
             <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-md border border-zinc-800 bg-zinc-900/60">
-                <ShieldCheck className="h-10 w-10 text-zinc-500" />
+              <div className="relative mb-6 flex h-24 w-24 items-center justify-center">
+                {/* Pulsing ring 1 */}
+                <div className="absolute inset-0 rounded-full border border-emerald-500/20 animate-ping [animation-duration:3s]" />
+                {/* Pulsing ring 2 */}
+                <div className="absolute inset-2 rounded-full border border-emerald-500/30 animate-pulse [animation-duration:2s]" />
+                {/* Outer ring */}
+                <div className="absolute inset-4 rounded-full border border-zinc-800 bg-zinc-900/60 shadow-lg shadow-emerald-950/10 flex items-center justify-center">
+                  <ShieldCheck className="h-10 w-10 text-emerald-400/80 animate-pulse" />
+                </div>
               </div>
               <h3 className="mb-2 text-xl font-semibold text-zinc-100">
-                Ready to Scan
+                {scanMode === "upload" ? "Ready for ZIP Scan" : "Ready to Scan"}
               </h3>
-              <p className="mb-6 max-w-md text-zinc-400">
-                Enter a public repository URL (GitHub, GitLab, or Bitbucket) above and start scanning to
-                detect leaked secrets.
+              <p className="mb-6 max-w-md text-zinc-400 text-sm">
+                {scanMode === "upload"
+                  ? "Upload a ZIP file above to scan your project folders in memory. Scan is temporary and no data is retained."
+                  : "Enter a public repository URL above and start scanning to detect leaked secrets."}
               </p>
 
               <div className="grid sm:grid-cols-3 gap-4 max-w-2xl w-full">

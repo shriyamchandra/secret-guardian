@@ -854,8 +854,8 @@ const TRUST_ITEMS = [
   },
   {
     icon: Database,
-    title: "Anti-Zip-Bomb Guards",
-    desc: "100:1 ratio limit, 10MB per file, 200MB total. Path traversal prevention.",
+    title: "Malicious Payload Protection",
+    desc: "Enterprise-grade protection against zip-bombs, path traversals, and recursion loops.",
   },
   {
     icon: AlertTriangle,
@@ -875,7 +875,7 @@ const TrustSection = () => (
       <div className="mb-10 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 className="text-3xl font-sans font-bold text-zinc-100">Built with Security-First Principles</h2>
-          <p className="mt-2 text-zinc-400">Your code is safe. Here&apos;s exactly how.</p>
+          <p className="mt-2 text-zinc-300">Your code is safe. Here&apos;s exactly how.</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <CheckCircle2 className="h-5 w-5 text-emerald-400" />
@@ -894,8 +894,8 @@ const TrustSection = () => (
               </div>
               <div className="flex-1 min-w-0">
                 <span className="font-semibold text-zinc-100">{item.title}</span>
-                <span className="hidden sm:inline text-zinc-600 mx-3">—</span>
-                <span className="block sm:inline text-sm text-zinc-400 mt-0.5 sm:mt-0">{item.desc}</span>
+                <span className="hidden sm:inline text-zinc-500 mx-3">—</span>
+                <span className="block sm:inline text-sm text-zinc-300 mt-0.5 sm:mt-0">{item.desc}</span>
               </div>
               <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-emerald-500 opacity-50 group-hover:opacity-100 transition-opacity" />
             </div>
