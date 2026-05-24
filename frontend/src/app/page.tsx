@@ -859,8 +859,8 @@ const TRUST_ITEMS = [
   },
   {
     icon: AlertTriangle,
-    title: "Rate Limited",
-    desc: "Token bucket: 10 scans/min, 100/hr per IP. Prevents abuse.",
+    title: "Fair Use Protection",
+    desc: "Smart request limits protect platform resources from abuse and ensure consistent speed for everyone.",
   },
   {
     icon: ExternalLink,
