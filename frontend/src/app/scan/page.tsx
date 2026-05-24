@@ -115,8 +115,13 @@ const PLACEHOLDERS = [
 export default function ScanPage() {
   const [repoUrl, setRepoUrl] = useState("");
   const [placeholderText, setPlaceholderText] = useState("");
+  const [isFocused, setIsFocused] = useState(false);
 
   useEffect(() => {
+    if (isFocused || repoUrl) {
+      setPlaceholderText("");
+      return;
+    }
     let isMounted = true;
     let placeholderIndex = 0;
     let charIndex = 0;
@@ -154,7 +159,7 @@ export default function ScanPage() {
       isMounted = false;
       clearTimeout(timeoutId);
     };
-  }, []);
+  }, [isFocused, repoUrl]);
   const [actionStatus, setActionStatus] = useState<ActionStatus | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
@@ -851,7 +856,7 @@ export default function ScanPage() {
                     </div>
                     <Input
                       type="url"
-                      placeholder={placeholderText || "https://github.com/owner/repo"}
+                      placeholder={isFocused ? "https://github.com/owner/repo" : (placeholderText || "https://github.com/owner/repo")}
                       value={repoUrl}
                       onChange={(e) => setRepoUrl(e.target.value)}
                       className="h-12 rounded-md border-zinc-800 pl-12 text-base font-mono focus:border-orange-500 focus:ring-orange-500 sm:h-14"
@@ -859,6 +864,8 @@ export default function ScanPage() {
                       onKeyDown={(e) =>
                         e.key === "Enter" && !loading && handleUrlScanClick()
                       }
+                      onFocus={() => setIsFocused(true)}
+                      onBlur={() => setIsFocused(false)}
                     />
                   </div>
                   <Button
@@ -1021,12 +1028,12 @@ export default function ScanPage() {
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <div className="relative mb-6 flex h-24 w-24 items-center justify-center">
                 {/* Pulsing ring 1 */}
-                <div className="absolute inset-0 rounded-full border border-emerald-500/20 animate-ping [animation-duration:3s]" />
+                <div className="absolute inset-0 rounded-full border border-emerald-500/20 motion-safe:animate-ping [animation-duration:3s]" />
                 {/* Pulsing ring 2 */}
-                <div className="absolute inset-2 rounded-full border border-emerald-500/30 animate-pulse [animation-duration:2s]" />
+                <div className="absolute inset-2 rounded-full border border-emerald-500/30 motion-safe:animate-pulse [animation-duration:2s]" />
                 {/* Outer ring */}
                 <div className="absolute inset-4 rounded-full border border-zinc-800 bg-zinc-900/60 shadow-lg shadow-emerald-950/10 flex items-center justify-center">
-                  <ShieldCheck className="h-10 w-10 text-emerald-400/80 animate-pulse" />
+                  <ShieldCheck className="h-10 w-10 text-emerald-400/80 motion-safe:animate-pulse" />
                 </div>
               </div>
               <h3 className="mb-2 text-xl font-semibold text-zinc-100">
