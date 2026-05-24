@@ -301,7 +301,7 @@ function MockFindingCard({ finding, isExpanded, onToggle }: {
 
 const Header = () => (
   <header className="absolute top-0 left-0 z-30 w-full">
-    <div className="max-w-6xl mx-auto px-4 sm:px-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="flex h-20 items-center justify-between border-b border-zinc-800">
         <div className="mr-4 flex-shrink-0">
           <Link href="/" className="flex items-center" aria-label="Secret Guardian">
@@ -356,10 +356,10 @@ const HeroSection = () => (
     <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_10%_20%,rgba(251,191,36,0.09),transparent_40%),radial-gradient(circle_at_85%_5%,rgba(16,185,129,0.08),transparent_35%)]" />
     <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_100%,rgba(239,68,68,0.05),transparent_50%)]" />
 
-    <div className="relative max-w-6xl mx-auto px-4 sm:px-6">
-      <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+    <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="grid gap-12 lg:grid-cols-12 lg:gap-20 xl:gap-24 items-center">
         {/* Left: copy */}
-        <div>
+        <div className="lg:col-span-7">
           <div className="mb-5 inline-flex items-center gap-2 rounded-md border border-emerald-800 bg-emerald-950/40 px-3 py-1.5 font-mono text-xs uppercase tracking-[0.14em] text-emerald-300">
             <Lock className="h-3.5 w-3.5" />
             Read-Only · No Data Stored · 100% Free
@@ -416,7 +416,7 @@ const HeroSection = () => (
         </div>
 
         {/* Right: terminal */}
-        <div>
+        <div className="lg:col-span-5">
           <TerminalHero />
           <p className="mt-3 text-center text-xs text-zinc-600 font-mono">
             ^ Simulated — real scans stream findings live
@@ -434,7 +434,7 @@ function DemoSection() {
 
   return (
     <section id="demo" className="border-b border-zinc-800 bg-zinc-950 py-20">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Section header */}
         <div className="mb-12 text-center">
           <div className="mb-4 inline-flex items-center gap-2 rounded-md border border-orange-800 bg-orange-950/30 px-3 py-1.5 font-mono text-xs uppercase tracking-widest text-orange-300">
@@ -591,7 +591,7 @@ const DETECTION_STEPS = [
 
 const HowItWorksSection = () => (
   <section id="how-it-works" className="border-b border-zinc-800 bg-zinc-900/30 py-20">
-    <div className="max-w-4xl mx-auto px-4 sm:px-6">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="mb-14 text-center">
         <h2 className="text-3xl font-sans font-bold text-zinc-100">Detection in 4 Stages</h2>
         <p className="mt-3 text-zinc-400 max-w-lg mx-auto">
@@ -619,12 +619,20 @@ const HowItWorksSection = () => (
 
                 {/* Content */}
                 <div className={`flex-1 pb-12 ${isLast ? "pb-0" : ""}`}>
-                  <div className="flex items-baseline gap-3 mb-2">
-                    <span className="font-mono text-[11px] text-zinc-600 tracking-widest">{step.number}</span>
-                    <h3 className="text-xl font-bold text-zinc-100">{step.title}</h3>
+                  <div className="flex flex-col lg:flex-row lg:items-start lg:gap-12">
+                    {/* Left: copy */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-3 mb-2">
+                        <span className="font-mono text-[11px] text-zinc-600 tracking-widest">{step.number}</span>
+                        <h3 className="text-xl font-bold text-zinc-100">{step.title}</h3>
+                      </div>
+                      <p className="text-zinc-400 leading-relaxed">{step.description}</p>
+                    </div>
+                    {/* Right: details code block/mock */}
+                    <div className="w-full lg:w-[48%] flex-shrink-0 mt-4 lg:mt-0">
+                      {step.detail}
+                    </div>
                   </div>
-                  <p className="text-zinc-400 leading-relaxed mb-3">{step.description}</p>
-                  {step.detail}
                 </div>
               </div>
             );
@@ -684,7 +692,7 @@ const FEATURES = [
 
 const FeaturesSection = () => (
   <section id="features" className="border-b border-zinc-800 bg-zinc-950 py-20">
-    <div className="max-w-5xl mx-auto px-4 sm:px-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="mb-16">
         <h2 className="text-3xl font-sans font-bold text-zinc-100">Everything You Need to Find &amp; Fix Leaks</h2>
         <p className="mt-3 text-zinc-400">Engineered for signal, not noise.</p>
@@ -863,7 +871,7 @@ const TRUST_ITEMS = [
 
 const TrustSection = () => (
   <section className="border-b border-zinc-800 bg-zinc-900/30 py-16">
-    <div className="max-w-6xl mx-auto px-4 sm:px-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="mb-10 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 className="text-3xl font-sans font-bold text-zinc-100">Built with Security-First Principles</h2>
@@ -933,7 +941,7 @@ const CTASection = () => (
 
 const Footer = () => (
   <footer className="bg-zinc-950 py-10 text-zinc-400">
-    <div className="max-w-6xl mx-auto px-4 sm:px-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="flex flex-col items-center justify-between gap-4 md:flex-row">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-6 w-6 text-emerald-400" />
