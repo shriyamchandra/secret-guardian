@@ -1,31 +1,41 @@
 "use client";
 
 import { Finding } from "@/types/scan";
-import { getSeverityColor, getSeverityIcon, maskSecret } from "@/lib/scan-utils";
+import { getSeverityColor, getSeverityIcon } from "@/lib/scan-utils";
 import { EducationTooltip } from "./EducationTooltip";
 import { ThreatContextBadge } from "./ThreatContextBadge";
 import { ThreatContextDetails } from "./ThreatContextDetails";
 import { EyeOff, Eye, CheckCircle2, Copy, Lock, Shield, Zap, AlertCircle } from "lucide-react";
 import { AIResponseMarkdown } from "@/components/AIResponseMarkdown";
 
+// DEBUG: force raw display while masking is temporarily disabled.
+// const RAW_SECRET_DEBUG_ENABLED =
+//   process.env.NEXT_PUBLIC_SHOW_RAW_SECRETS === "true";
+const RAW_SECRET_DEBUG_ENABLED = true;
+
 interface ScanFindingItemProps {
   finding: Finding;
   findingKey: string;
-  isRevealed: boolean;
+  revealedValue?: string;
   copiedKey: string | null;
-  toggleRevealSecret: (key: string) => void;
+  toggleRevealSecret: (key: string, fingerprint?: string) => void;
   copyText: (text: string, key: string) => void;
 }
 
 export const ScanFindingItem = ({
   finding: f,
   findingKey: key,
-  isRevealed,
+  revealedValue,
   copiedKey,
   toggleRevealSecret,
   copyText,
 }: ScanFindingItemProps) => {
-  const canReveal = Boolean(f.raw_value && String(f.raw_value).trim().length > 0);
+  const rawDebugValue = RAW_SECRET_DEBUG_ENABLED ? f.raw_value : undefined;
+  // DEBUG: prefer raw values over masked/revealed values.
+  // const displayValue = rawDebugValue || revealedValue || f.masked_value || "";
+  const displayValue = f.raw_value || rawDebugValue || revealedValue || "";
+  const isRevealed = Boolean(rawDebugValue || revealedValue);
+  const canReveal = Boolean(f.secret_fingerprint) && !rawDebugValue;
 
   return (
     <div className="p-5">
@@ -47,6 +57,16 @@ export const ScanFindingItem = ({
         <span className="inline-flex items-center rounded-md border border-orange-800 bg-orange-950/45 px-3 py-1 text-xs font-medium text-orange-200">
           {f.secret_type}
         </span>
+        {f.suppressed && (
+          <span className="inline-flex items-center rounded-md border border-yellow-800 bg-yellow-950/45 px-3 py-1 text-xs font-medium text-yellow-350">
+            Suppressed ({f.suppression_reason || f.suppression_rule_id || "Noise"})
+          </span>
+        )}
+        {f.requires_review && (
+          <span className="inline-flex items-center rounded-md border border-orange-850 bg-orange-950/45 px-3 py-1 text-xs font-medium text-orange-400 animate-pulse">
+            Needs Review
+          </span>
+        )}
         {f.confidence && (
           <span className="inline-flex items-center rounded-md border border-orange-900 bg-orange-950/30 px-3 py-1 text-xs font-medium text-orange-300">
             {f.confidence} Confidence
@@ -91,7 +111,7 @@ export const ScanFindingItem = ({
           <div className="flex items-center gap-2">
             <button
               className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-mono font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={() => canReveal && toggleRevealSecret(key)}
+              onClick={() => canReveal && toggleRevealSecret(key, f.secret_fingerprint)}
               aria-label={
                 canReveal
                   ? isRevealed
@@ -101,7 +121,12 @@ export const ScanFindingItem = ({
               }
               disabled={!canReveal}
             >
-              {!canReveal ? (
+              {rawDebugValue ? (
+                <>
+                  <Eye className="h-3.5 w-3.5" />
+                  Raw Debug
+                </>
+              ) : !canReveal ? (
                 <>
                   <Lock className="h-3.5 w-3.5" />
                   Unavailable
@@ -118,10 +143,12 @@ export const ScanFindingItem = ({
                 </>
               )}
             </button>
+            {/* onClick={() => copyText(isRevealed ? displayValue : (f.masked_value || ""), key + "-copy")} */}
+            {/* aria-label={isRevealed ? "Copy raw secret value" : "Copy masked secret value"} */}
             <button
               className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-mono font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-800"
-              onClick={() => copyText(f.raw_value ? maskSecret(f.raw_value, false) : "", key + "-copy")}
-              aria-label="Copy masked value"
+              onClick={() => copyText(displayValue, key + "-copy")}
+              aria-label="Copy raw secret value"
             >
               {copiedKey === key + "-copy" ? (
                 <>
@@ -131,7 +158,8 @@ export const ScanFindingItem = ({
               ) : (
                 <>
                   <Copy className="h-3.5 w-3.5" />
-                  Copy (Masked)
+                  {/* {isRevealed ? "Copy (Raw)" : "Copy (Masked)"} */}
+                  Copy Raw
                 </>
               )}
             </button>
@@ -142,17 +170,17 @@ export const ScanFindingItem = ({
         </pre>
       </div>
 
-      {/* Masked Secret Display */}
-      {f.raw_value && (
+      {/* DEBUG: Masked Secret Display disabled; showing raw detected value. */}
+      {(displayValue || isRevealed) && (
         <div className="mb-4 rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Lock className="h-4 w-4 text-zinc-500" />
               <span className="text-sm font-medium text-zinc-300">Detected Value:</span>
-              <EducationTooltip topic="masking" />
+              {/* <EducationTooltip topic="masking" /> */}
             </div>
-            <span className="font-mono text-sm text-zinc-100">
-              {maskSecret(f.raw_value, isRevealed)}
+            <span className="font-mono text-sm text-zinc-100 break-all">
+              {displayValue}
             </span>
           </div>
         </div>

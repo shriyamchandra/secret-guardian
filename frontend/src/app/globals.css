@@ -316,12 +316,16 @@ body {
     border: 1px solid var(--surface-border);
     border-radius: var(--radius-card);
     background: var(--surface-1);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
   }
 
   .panel-surface-strong {
     border: 1px solid var(--surface-border);
     border-radius: var(--radius-card);
     background: var(--surface-2);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
   }
 
   .interactive-card {
@@ -399,4 +403,65 @@ body {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Fluid Blob Animations for background glows */
+@keyframes fluid-blob-1 {
+  0%, 100% {
+    transform: translate(0px, 0px) scale(1);
+    border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%;
+  }
+  33% {
+    transform: translate(90px, -100px) scale(1.2);
+    border-radius: 40% 60% 70% 30% / 50% 60% 40% 50%;
+  }
+  66% {
+    transform: translate(-70px, 60px) scale(0.9);
+    border-radius: 50% 50% 40% 60% / 40% 30% 70% 60%;
+  }
+}
+
+@keyframes fluid-blob-2 {
+  0%, 100% {
+    transform: translate(0px, 0px) scale(1);
+    border-radius: 50% 50% 60% 40% / 40% 60% 50% 50%;
+  }
+  33% {
+    transform: translate(-100px, 80px) scale(0.8);
+    border-radius: 70% 30% 50% 50% / 30% 50% 50% 70%;
+  }
+  66% {
+    transform: translate(80px, -50px) scale(1.15);
+    border-radius: 30% 70% 40% 60% / 60% 40% 60% 30%;
+  }
+}
+
+@keyframes fluid-blob-3 {
+  0%, 100% {
+    transform: translate(0px, 0px) scale(1);
+    border-radius: 40% 60% 50% 50% / 50% 40% 60% 50%;
+  }
+  33% {
+    transform: translate(-50px, -90px) scale(1.2);
+    border-radius: 60% 40% 60% 40% / 40% 60% 40% 60%;
+  }
+  66% {
+    transform: translate(90px, 70px) scale(0.8);
+    border-radius: 50% 50% 30% 70% / 70% 30% 70% 30%;
+  }
+}
+
+.animate-fluid-blob-1 {
+  animation: fluid-blob-1 8s infinite alternate ease-in-out;
+  will-change: transform, border-radius;
+}
+
+.animate-fluid-blob-2 {
+  animation: fluid-blob-2 10s infinite alternate ease-in-out;
+  will-change: transform, border-radius;
+}
+
+.animate-fluid-blob-3 {
+  animation: fluid-blob-3 7s infinite alternate ease-in-out;
+  will-change: transform, border-radius;
 }

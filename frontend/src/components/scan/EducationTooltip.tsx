@@ -15,9 +15,11 @@ const educationContent = {
       "Public repositories are indexed by search engines and bots. Exposed secrets can be found within minutes and exploited for unauthorized access, data theft, or financial fraud.",
   },
   masking: {
-    title: "Why We Mask Secrets",
+    // title: "Why We Mask Secrets",
+    title: "Raw Debug Mode",
     content:
-      "Secrets are masked by default to prevent accidental screen sharing exposure, shoulder surfing, and browser history/cache leakage. Only reveal when absolutely necessary.",
+      // "Secrets are masked by default to prevent accidental screen sharing exposure, shoulder surfing, and browser history/cache leakage. Only reveal when absolutely necessary.",
+      "Secret masking is temporarily disabled so detector output can be debugged end to end.",
   },
   threatContext: {
     title: "Context-Aware Threat Analysis",

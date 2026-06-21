@@ -8,9 +8,9 @@ import { ScanFindingItem } from "./ScanFindingItem";
 interface FileFindingsAccordionProps {
   filePath: string;
   fileFindings: Finding[];
-  revealedSecrets: Set<string>;
+  revealedSecrets: Record<string, string>;
   copiedKey: string | null;
-  toggleRevealSecret: (key: string) => void;
+  toggleRevealSecret: (key: string, fingerprint?: string) => void;
   copyText: (text: string, key: string) => void;
   defaultOpen?: boolean;
 }
@@ -32,7 +32,7 @@ export const FileFindingsAccordion = ({
       String(finding.line_number ?? 0),
       finding.secret_type ?? "",
       finding.scanner_source ?? "",
-      finding.raw_value ?? finding.leaked_line ?? "",
+      finding.secret_fingerprint ?? finding.leaked_line ?? "",
     ].join("|");
 
   return (
@@ -77,14 +77,14 @@ export const FileFindingsAccordion = ({
         <div className="divide-y divide-zinc-800 border-t border-zinc-800 bg-zinc-900/20">
           {fileFindings.map((f, idx) => {
             const findingKey = getFindingKey(f);
-            const isRevealed = revealedSecrets.has(findingKey);
+            const revealedValue = revealedSecrets[findingKey];
 
             return (
               <ScanFindingItem
                 key={`${findingKey}-${idx}`}
                 finding={f}
                 findingKey={findingKey}
-                isRevealed={isRevealed}
+                revealedValue={revealedValue}
                 copiedKey={copiedKey}
                 toggleRevealSecret={toggleRevealSecret}
                 copyText={copyText}

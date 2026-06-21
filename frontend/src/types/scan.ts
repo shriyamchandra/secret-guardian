@@ -29,13 +29,24 @@ export type Finding = {
   entropy?: number;
   severity?: Severity;
   raw_value?: string;
+  masked_value?: string;
+  secret_fingerprint?: string;
+  secret_length?: number;
+  prefix_hint?: string;
+  suffix_hint?: string;
+  visible?: boolean;
+  suppressed?: boolean;
+  suppression_reason?: string | null;
+  suppression_rule_id?: string | null;
+  risk_adjustment?: string | null;
+  requires_review?: boolean;
   scanner_source?: string;
   source_scanners?: string[];
   is_noise?: boolean;
   noise_type?: string | null;
   severity_override?: Severity | null;
   ai_remediation_eligible?: boolean;
-  occurrences?: FindingOccurrence[];
+  occurrences?: FindingOccurrence[] | number;
   occurrence_count?: number;
   threat_context?: ThreatContext;
   ai_fix?: {
@@ -49,6 +60,8 @@ export type Finding = {
 
 export type ScanResult = {
   findings: Finding[];
+  suppressed_findings?: Finding[];
+  suppressed_counts?: Record<string, number>;
   total_findings: number;
   files_affected: number;
   severity_breakdown: Record<Severity, number>;
@@ -68,9 +81,22 @@ export type ScanResult = {
   aggregated_findings?: boolean;
   has_critical: boolean;
   has_high: boolean;
+  scan_token?: string;
+  reveal_signature?: string;
+  raw_secret_debug_enabled?: boolean;
+  files_seen?: number;
+  files_scanned?: number;
+  files_skipped?: number;
+  skip_reasons?: Record<string, number>;
+  scan_incomplete?: boolean;
+  scanner_versions?: Record<string, string>;
   heuristics_stats?: {
     signals_analyzed: number;
     false_positives_filtered: number;
+    scanner_breakdown?: Record<
+      string,
+      { emitted: number; visible: number; suppressed: number }
+    >;
   };
   ai_stats?: {
     ai_calls_made: number;

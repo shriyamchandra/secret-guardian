@@ -50,21 +50,25 @@ Example:
 Even if you delete a secret, it stays in git history forever unless you rewrite it.`,
   },
   masking: {
-    title: "Why We Mask Secrets",
+    // title: "Why We Mask Secrets",
+    title: "Raw Debug Mode",
     icon: Lock,
-    content: `Secrets are masked (hidden) by default for several important reasons:
+    // content: `Secrets are masked (hidden) by default for several important reasons:
 
-**Screen sharing protection**
-You might share your screen in meetings or record tutorials without realizing secrets are visible.
+// **Screen sharing protection**
+// You might share your screen in meetings or record tutorials without realizing secrets are visible.
 
-**Shoulder surfing**
-People nearby could see your screen in coffee shops, offices, or public transport.
+// **Shoulder surfing**
+// People nearby could see your screen in coffee shops, offices, or public transport.
 
-**Browser cache/history**
-Unmasked values might be cached or appear in browser history.
+// **Browser cache/history**
+// Unmasked values might be cached or appear in browser history.
 
-**Best practice**
-Only reveal secrets when absolutely necessary, on a secure device, in a private setting.`,
+// **Best practice**
+// Only reveal secrets when absolutely necessary, on a secure device, in a private setting.`,
+    content: `Secret masking is temporarily disabled for debugging.
+
+Raw values are shown in scan results, exports, and copied logs so backend and frontend data flow can be inspected directly.`,
   },
   severity: {
     title: "Understanding Severity Levels",

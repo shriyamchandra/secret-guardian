@@ -60,8 +60,11 @@ export const parseEventPayload = (raw: string): Record<string, unknown> => {
 
 export const maskSecret = (value: string, revealed: boolean = false): string => {
   if (!value) return "";
-  if (revealed) return value;
-  return "••••••••••••";
+  void revealed;
+  // DEBUG: UI masking is temporarily disabled so raw values are visible.
+  // if (revealed) return value;
+  // return "••••••••••••";
+  return value;
 };
 
 export const getSeverityColor = (severity?: Severity) => {

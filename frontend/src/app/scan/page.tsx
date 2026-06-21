@@ -1,39 +1,35 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  ActionStatusBanner,
-  type ActionStatus,
-} from "@/components/scan/ActionStatusBanner";
+import { ScanPageHeader } from "@/components/scan/ScanPageHeader";
+import { ScanModeToggle } from "@/components/scan/ScanModeToggle";
+import { UrlScanForm } from "@/components/scan/UrlScanForm";
+import { ZipUploadForm } from "@/components/scan/ZipUploadForm";
+import { ScanStatusPanel } from "@/components/scan/ScanStatusPanel";
+import { SuppressedFindingsSection } from "@/components/scan/SuppressedFindingsSection";
 import { useScanStream } from "@/hooks/useScanStream";
-import {
-  getErrorMessage,
-  isSupportedRepoUrl,
-  parseTimeoutMs,
-  severityRank,
-} from "@/lib/scan-utils";
+import { isSupportedRepoUrl, parseTimeoutMs } from "@/lib/scan-utils";
+import { getStableFindingKey, type SortOption } from "@/lib/finding-filters";
+import { useTypewriterPlaceholder } from "@/hooks/useTypewriterPlaceholder";
+import { useZipUpload } from "@/hooks/useZipUpload";
+import { useInfiniteList } from "@/hooks/useInfiniteList";
+import { useFindingFilters } from "@/hooks/useFindingFilters";
+import { useCopyFeedback, useRevealSecret } from "@/hooks/useRevealSecret";
+import { useExportActions } from "@/hooks/useExportActions";
 import { ScanSummaryCards } from "@/components/scan/ScanSummaryCards";
 import { VulnerabilityCard } from "@/components/scan/VulnerabilityCard";
-import { Finding, Severity } from "@/types/scan";
+import { Severity } from "@/types/scan";
 import {
   ArrowUpDown,
   CheckCircle2,
   Clipboard,
   FileJson,
   FileText,
-  Filter,
-  FolderArchive,
-  Github,
-  Loader2,
   Lock,
   Search,
-  Shield,
   ShieldCheck,
-  Upload,
-  X,
   Zap,
   AlertTriangle,
 } from "lucide-react";
@@ -42,140 +38,18 @@ const SCAN_REQUEST_TIMEOUT_MS = parseTimeoutMs(
   process.env.NEXT_PUBLIC_SCAN_TIMEOUT_MS,
   300_000
 );
-const EXPORT_REQUEST_TIMEOUT_MS = parseTimeoutMs(
-  process.env.NEXT_PUBLIC_EXPORT_TIMEOUT_MS,
-  30_000
-);
+// DEBUG: force raw values while masking is temporarily disabled.
+// const RAW_SECRET_DEBUG_ENABLED =
+//   process.env.NEXT_PUBLIC_SHOW_RAW_SECRETS === "true";
+// const RAW_SECRET_DEBUG_ENABLED = true;
 const FINDINGS_BATCH_SIZE = 25;
 
-type SortOption = "risk-desc" | "count-desc" | "file-asc" | "file-desc";
-
-const getOccurrenceCount = (finding: Finding) =>
-  finding.occurrence_count ?? finding.occurrences?.length ?? 1;
-
-const getPrimaryPath = (finding: Finding) =>
-  finding.occurrences?.[0]?.file_path || finding.file_path || "";
-
-const DEFAULT_SEVERITY_SELECTION: Record<Severity, boolean> = {
-  CRITICAL: true,
-  HIGH: true,
-  MEDIUM: true,
-  LOW: true,
-};
-
-const getFileExtension = (path: string) => {
-  const fileName = path.split("/").pop() || "";
-  if (!fileName) return "(unknown)";
-
-  if (fileName.startsWith(".") && !fileName.slice(1).includes(".")) {
-    return fileName.toLowerCase();
-  }
-
-  const dotIndex = fileName.lastIndexOf(".");
-  if (dotIndex <= 0) {
-    return "(no ext)";
-  }
-  return fileName.slice(dotIndex).toLowerCase();
-};
-
-const getScannerSources = (finding: Finding) => {
-  if (finding.source_scanners?.length) {
-    return finding.source_scanners
-      .map((source) => source.toLowerCase())
-      .filter(Boolean);
-  }
-
-  const source = String(finding.scanner_source || "").toLowerCase();
-  return source ? [source] : [];
-};
-
-const getStableFindingKey = (finding: Finding) => {
-  const occurrenceKey = (finding.occurrences || [])
-    .map((occurrence) => `${occurrence.file_path}:${occurrence.line_number}`)
-    .join(",");
-
-  return [
-    finding.raw_value || "",
-    finding.secret_type || "",
-    finding.file_path || "",
-    String(finding.line_number || 0),
-    occurrenceKey,
-  ].join("|");
-};
-
-const PLACEHOLDERS = [
-  "https://github.com/facebook/react",
-  "https://github.com/vercel/next.js",
-  "https://github.com/django/django",
-  "https://github.com/golang/go",
-  "https://github.com/rails/rails",
-  "https://github.com/kubernetes/kubernetes"
-];
 
 export default function ScanPage() {
   const [repoUrl, setRepoUrl] = useState("");
-  const [placeholderText, setPlaceholderText] = useState("");
   const [isFocused, setIsFocused] = useState(false);
-
-  useEffect(() => {
-    if (isFocused || repoUrl) {
-      setPlaceholderText("");
-      return;
-    }
-    let isMounted = true;
-    let placeholderIndex = 0;
-    let charIndex = 0;
-    let typing = true;
-    let timeoutId: NodeJS.Timeout;
-
-    const tick = () => {
-      if (!isMounted) return;
-      const currentFullText = PLACEHOLDERS[placeholderIndex];
-      if (typing) {
-        setPlaceholderText(currentFullText.slice(0, charIndex + 1));
-        charIndex++;
-        if (charIndex >= currentFullText.length) {
-          typing = false;
-          timeoutId = setTimeout(tick, 2000); // Pause on complete string
-        } else {
-          timeoutId = setTimeout(tick, 45); // Typing speed
-        }
-      } else {
-        setPlaceholderText(currentFullText.slice(0, charIndex - 1));
-        charIndex--;
-        if (charIndex <= 0) {
-          typing = true;
-          placeholderIndex = (placeholderIndex + 1) % PLACEHOLDERS.length;
-          timeoutId = setTimeout(tick, 500); // Pause before next string
-        } else {
-          timeoutId = setTimeout(tick, 20); // Erasing speed
-        }
-      }
-    };
-
-    timeoutId = setTimeout(tick, 500);
-
-    return () => {
-      isMounted = false;
-      clearTimeout(timeoutId);
-    };
-  }, [isFocused, repoUrl]);
-  const [actionStatus, setActionStatus] = useState<ActionStatus | null>(null);
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
+  const placeholderText = useTypewriterPlaceholder(isFocused || Boolean(repoUrl));
   const [scanMode, setScanMode] = useState<"url" | "upload">("url");
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [dragActive, setDragActive] = useState(false);
-  const [findingSearch, setFindingSearch] = useState("");
-  const [selectedSeverities, setSelectedSeverities] = useState<
-    Record<Severity, boolean>
-  >({ ...DEFAULT_SEVERITY_SELECTION });
-  const [selectedFileTypes, setSelectedFileTypes] = useState<string[]>([]);
-  const [selectedScanners, setSelectedScanners] = useState<string[]>([]);
-  const [sortOption, setSortOption] = useState<SortOption>("risk-desc");
-  const [visibleCount, setVisibleCount] = useState(FINDINGS_BATCH_SIZE);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
 
   const {
     scanResult,
@@ -188,9 +62,22 @@ export default function ScanPage() {
     setError,
   } = useScanStream(SCAN_REQUEST_TIMEOUT_MS);
 
+  const {
+    uploadedFile,
+    setUploadedFile,
+    dragActive,
+    handleDrag,
+    handleDrop,
+    handleFileSelect,
+  } = useZipUpload(setError);
+
+  const { copiedKey, markCopied, copyText } = useCopyFeedback();
+
   const findings = useMemo(() => scanResult?.findings || [], [scanResult]);
   const displayedFindings = findings.length;
   const totalFindings = scanResult?.total_findings ?? displayedFindings;
+  const [showSuppressedSection, setShowSuppressedSection] = useState(false);
+  const suppressedFindings = useMemo(() => scanResult?.suppressed_findings || [], [scanResult]);
 
   const severityCounts = useMemo(
     () =>
@@ -203,141 +90,72 @@ export default function ScanPage() {
     [scanResult]
   );
 
-  const fileTypeOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(findings.map((finding) => getFileExtension(getPrimaryPath(finding))))
-      ).sort((a, b) => a.localeCompare(b)),
-    [findings]
-  );
-
-  const scannerOptions = useMemo(
-    () =>
-      Array.from(new Set(findings.flatMap((finding) => getScannerSources(finding))))
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b)),
-    [findings]
-  );
-
-  const filteredFindings = useMemo(() => {
-    const query = findingSearch.trim().toLowerCase();
-    const selectedScannerSet = new Set(
-      selectedScanners.map((source) => source.toLowerCase())
-    );
-
-    return findings.filter((finding) => {
-      const severity = (finding.severity || "LOW") as Severity;
-      if (!selectedSeverities[severity]) {
-        return false;
-      }
-
-      const fileType = getFileExtension(getPrimaryPath(finding));
-      if (selectedFileTypes.length > 0 && !selectedFileTypes.includes(fileType)) {
-        return false;
-      }
-
-      const sources = getScannerSources(finding);
-      if (
-        selectedScanners.length > 0 &&
-        !sources.some((source) => selectedScannerSet.has(source))
-      ) {
-        return false;
-      }
-
-      if (!query) {
-        return true;
-      }
-
-      const searchable = [
-        finding.file_path,
-        finding.secret_type,
-        ...(finding.occurrences || []).map(
-          (occurrence) => `${occurrence.file_path}:${occurrence.line_number}`
-        ),
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      return searchable.includes(query);
-    });
-  }, [
-    findings,
+  const {
     findingSearch,
+    setFindingSearch,
     selectedSeverities,
     selectedFileTypes,
     selectedScanners,
-  ]);
+    sortOption,
+    setSortOption,
+    fileTypeOptions,
+    scannerOptions,
+    sortedFindings,
+    toggleSeverity,
+    toggleFileType,
+    toggleScannerSource,
+    reset: resetFilters,
+  } = useFindingFilters(findings);
 
-  const sortedFindings = useMemo(() => {
-    const sorted = [...filteredFindings];
-    sorted.sort((a, b) => {
-      const severityDiff = severityRank(b.severity) - severityRank(a.severity);
-      const countDiff = getOccurrenceCount(b) - getOccurrenceCount(a);
-      const fileA = getPrimaryPath(a);
-      const fileB = getPrimaryPath(b);
+  const {
+    visibleCount,
+    isLoadingMore,
+    sentinelRef: loadMoreSentinelRef,
+    hasMore: hasMoreFindings,
+    loadMore: loadMoreFindings,
+    reset: resetVisibleCount,
+  } = useInfiniteList(sortedFindings.length, FINDINGS_BATCH_SIZE);
 
-      switch (sortOption) {
-        case "count-desc":
-          return countDiff || severityDiff || fileA.localeCompare(fileB);
-        case "file-asc":
-          return fileA.localeCompare(fileB);
-        case "file-desc":
-          return fileB.localeCompare(fileA);
-        case "risk-desc":
-        default:
-          return severityDiff || countDiff || fileA.localeCompare(fileB);
-      }
-    });
-    return sorted;
-  }, [filteredFindings, sortOption]);
+  const { revealedSecrets, toggleRevealSecret } = useRevealSecret(scanResult);
+
+  const {
+    actionStatus,
+    setActionStatus,
+    exportJSON,
+    copySummary,
+    exportLog,
+    copyLog,
+  } = useExportActions({
+    scanResult,
+    findings,
+    scanMode,
+    uploadedFileName: uploadedFile?.name,
+    repoUrl,
+    markCopied,
+  });
+
+  const switchScanMode = (mode: "url" | "upload") => {
+    cancelScan();
+    setScanMode(mode);
+    setError("");
+    setActionStatus(null);
+  };
+
+  const resetAllFindingControls = () => {
+    resetFilters();
+    resetVisibleCount();
+  };
 
   const visibleFindings = useMemo(
     () => sortedFindings.slice(0, visibleCount),
     [sortedFindings, visibleCount]
   );
 
-  const hasMoreFindings = visibleCount < sortedFindings.length;
   const visibleStart = visibleFindings.length > 0 ? 1 : 0;
   const visibleEnd = visibleFindings.length;
   const filteredNoiseCount =
     scanResult?.heuristics_stats?.false_positives_filtered ??
     findings.filter((finding) => finding.is_noise).length;
-
-  const loadMoreFindings = useCallback(() => {
-    if (!hasMoreFindings || isLoadingMore) {
-      return;
-    }
-
-    setIsLoadingMore(true);
-    window.setTimeout(() => {
-      setVisibleCount((prev) => Math.min(prev + FINDINGS_BATCH_SIZE, sortedFindings.length));
-      setIsLoadingMore(false);
-    }, 280);
-  }, [hasMoreFindings, isLoadingMore, sortedFindings.length]);
-
-  useEffect(() => {
-    setVisibleCount(Math.min(FINDINGS_BATCH_SIZE, sortedFindings.length));
-    setIsLoadingMore(false);
-  }, [sortedFindings.length]);
-
-  useEffect(() => {
-    if (!loadMoreSentinelRef.current || !hasMoreFindings) {
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          loadMoreFindings();
-        }
-      },
-      { rootMargin: "280px 0px" }
-    );
-
-    observer.observe(loadMoreSentinelRef.current);
-    return () => observer.disconnect();
-  }, [hasMoreFindings, loadMoreFindings]);
 
   const headerSubtitle = useMemo(() => {
     if (error) return error;
@@ -348,9 +166,9 @@ export default function ScanPage() {
       return "No secrets found. Your code looks secure.";
     }
     if (scanMode === "upload") {
-      return "Upload a ZIP file to scan for leaked secrets locally. No data stored.";
+      return "Upload a ZIP file to scan for leaked secrets locally. Scan runs in-memory.";
     }
-    return "Scan public GitHub, GitLab, or Bitbucket repositories for leaked secrets. Read-only. No data stored.";
+    return "Scan public GitHub, GitLab, or Bitbucket repositories for leaked secrets. Read-only scan in-memory.";
   }, [error, scanResult, totalFindings, scanMode]);
 
   const scanStatusMeta = useMemo(() => {
@@ -377,8 +195,8 @@ export default function ScanPage() {
         title: scanMode === "upload" ? "Ready for ZIP scan" : "Ready for repository scan",
         message:
           scanMode === "upload"
-            ? "Upload a ZIP file and start scanning. Files are analyzed temporarily and not stored."
-            : "Paste a public GitHub, GitLab, or Bitbucket repository URL and start scanning. The scan is read-only and temporary.",
+            ? "Upload a ZIP file and start scanning. Files are analyzed in volatile memory."
+            : "Paste a public GitHub, GitLab, or Bitbucket repository URL and start scanning. The scan is read-only and runs in-memory.",
       };
     }
 
@@ -408,96 +226,6 @@ export default function ScanPage() {
     };
   }, [loading, error, scanResult, scanMode, totalFindings, progress]);
 
-  const copyText = async (text: string, key: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedKey(key);
-      setTimeout(() => setCopiedKey(null), 1200);
-    } catch {
-      // ignore silently
-    }
-  };
-
-  const toggleRevealSecret = (key: string) => {
-    if (revealedSecrets.has(key)) {
-      setRevealedSecrets((prev) => {
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-      return;
-    }
-
-    const approved = window.confirm(
-      "Reveal this secret? Only do this on a secure device and avoid screen sharing."
-    );
-    if (!approved) {
-      return;
-    }
-
-    setRevealedSecrets((prev) => new Set(prev).add(key));
-  };
-
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") setDragActive(true);
-    else if (e.type === "dragleave") setDragActive(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files?.[0]?.name.toLowerCase().endsWith(".zip")) {
-      setUploadedFile(e.dataTransfer.files[0]);
-      setError("");
-    } else {
-      setError("Please upload a ZIP file");
-    }
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]?.name.toLowerCase().endsWith(".zip")) {
-      setUploadedFile(e.target.files[0]);
-      setError("");
-    } else {
-      setError("Please upload a ZIP file");
-    }
-  };
-
-  const resetFindingControls = () => {
-    setFindingSearch("");
-    setSelectedSeverities({ ...DEFAULT_SEVERITY_SELECTION });
-    setSelectedFileTypes([]);
-    setSelectedScanners([]);
-    setSortOption("risk-desc");
-    setVisibleCount(FINDINGS_BATCH_SIZE);
-  };
-
-  const toggleSeverity = (severity: Severity) => {
-    setSelectedSeverities((prev) => ({
-      ...prev,
-      [severity]: !prev[severity],
-    }));
-  };
-
-  const toggleFileType = (fileType: string) => {
-    setSelectedFileTypes((prev) =>
-      prev.includes(fileType)
-        ? prev.filter((value) => value !== fileType)
-        : [...prev, fileType]
-    );
-  };
-
-  const toggleScannerSource = (source: string) => {
-    setSelectedScanners((prev) =>
-      prev.includes(source)
-        ? prev.filter((value) => value !== source)
-        : [...prev, source]
-    );
-  };
-
   const handleUploadScanClick = () => {
     if (!uploadedFile) {
       setError("Please select a ZIP file to scan");
@@ -509,7 +237,7 @@ export default function ScanPage() {
       return;
     }
     setActionStatus(null);
-    resetFindingControls();
+    resetAllFindingControls();
     runUploadScan(uploadedFile, apiUrl);
   };
 
@@ -527,497 +255,55 @@ export default function ScanPage() {
       setError("Frontend API URL is not configured. Set NEXT_PUBLIC_API_URL.");
       return;
     }
-    resetFindingControls();
+    resetAllFindingControls();
     runUrlScan(repoUrl.trim(), apiUrl);
-  };
-
-  const buildExportPayload = () => {
-    if (!scanResult) {
-      return null;
-    }
-
-    const source = scanResult.source || (scanMode === "upload" ? "upload" : "repository_url");
-    const target =
-      scanResult.scan_target ||
-      (source === "upload"
-        ? scanResult.filename || uploadedFile?.name || "Uploaded ZIP file"
-        : repoUrl.trim());
-
-    return {
-      findings,
-      repo_url: source === "upload" ? "" : target,
-      scan_duration: scanResult.scan_duration,
-      severity_breakdown: scanResult.severity_breakdown,
-      scan_source: source,
-      scan_target: target,
-      scanned_filename: scanResult.filename,
-      uploaded_file_size_mb: scanResult.file_size_mb,
-      scanners_used: scanResult.scanners_used || [],
-      files_affected: scanResult.files_affected || 0,
-      total_findings: scanResult.total_findings ?? findings.length,
-      displayed_findings: scanResult.displayed_findings ?? findings.length,
-      findings_truncated: Boolean(scanResult.findings_truncated),
-    };
-  };
-
-  const exportJSON = async () => {
-    if (!scanResult) return;
-    const payload = buildExportPayload();
-    if (!payload) return;
-
-    setActionStatus(null);
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(
-      () => controller.abort(),
-      EXPORT_REQUEST_TIMEOUT_MS
-    );
-
-    try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/json`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(
-          getErrorMessage(
-            await response.json().catch(() => ({})),
-            "Failed to export JSON"
-          )
-        );
-      }
-
-      const url = URL.createObjectURL(await response.blob());
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `secret-guardian-report-${Date.now()}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      setActionStatus({
-        type: "success",
-        message: "JSON report exported successfully.",
-      });
-    } catch (e: unknown) {
-      const isAbort = e instanceof DOMException && e.name === "AbortError";
-      setActionStatus({
-        type: "error",
-        message: isAbort
-          ? "Export timed out."
-          : e instanceof Error
-            ? e.message
-            : "Failed to export JSON",
-      });
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
-  };
-
-  const copySummary = async () => {
-    if (!scanResult) return;
-    const payload = buildExportPayload();
-    if (!payload) return;
-
-    setActionStatus(null);
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(
-      () => controller.abort(),
-      EXPORT_REQUEST_TIMEOUT_MS
-    );
-
-    try {
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/export/summary`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        }
-      );
-      if (!response.ok) {
-        throw new Error(
-          getErrorMessage(
-            await response.json().catch(() => ({})),
-            "Failed to copy summary"
-          )
-        );
-      }
-
-      await navigator.clipboard.writeText((await response.json()).summary);
-      setCopiedKey("summary");
-      setTimeout(() => setCopiedKey(null), 2000);
-      setActionStatus({ type: "success", message: "Summary copied to clipboard." });
-    } catch (e: unknown) {
-      const isAbort = e instanceof DOMException && e.name === "AbortError";
-      setActionStatus({
-        type: "error",
-        message: isAbort
-          ? "Copy timed out."
-          : e instanceof Error
-            ? e.message
-            : "Failed to copy summary",
-      });
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
-  };
-
-  const exportLog = async () => {
-    if (!scanResult) return;
-    const payload = buildExportPayload();
-    if (!payload) return;
-
-    setActionStatus(null);
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(
-      () => controller.abort(),
-      EXPORT_REQUEST_TIMEOUT_MS
-    );
-
-    try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/export/log`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(
-          getErrorMessage(
-            await response.json().catch(() => ({})),
-            "Failed to export scan log"
-          )
-        );
-      }
-
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `secret-guardian-scan-log-${Date.now()}.log`;
-      a.click();
-      URL.revokeObjectURL(url);
-
-      setActionStatus({
-        type: "success",
-        message: "Scan log downloaded successfully.",
-      });
-    } catch (e: unknown) {
-      const isAbort = e instanceof DOMException && e.name === "AbortError";
-      setActionStatus({
-        type: "error",
-        message: isAbort
-          ? "Log export timed out."
-          : e instanceof Error
-            ? e.message
-            : "Failed to export scan log",
-      });
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
-  };
-
-  const copyLog = async () => {
-    if (!scanResult) return;
-    const payload = buildExportPayload();
-    if (!payload) return;
-
-    setActionStatus(null);
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(
-      () => controller.abort(),
-      EXPORT_REQUEST_TIMEOUT_MS
-    );
-
-    try {
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/export/log?include_raw=true`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          getErrorMessage(
-            await response.json().catch(() => ({})),
-            "Failed to copy scan log"
-          )
-        );
-      }
-
-      await navigator.clipboard.writeText(await response.text());
-      setCopiedKey("log");
-      setTimeout(() => setCopiedKey(null), 2000);
-      setActionStatus({
-        type: "success",
-        message: "Scan log copied (with raw values for debugging).",
-      });
-    } catch (e: unknown) {
-      const isAbort = e instanceof DOMException && e.name === "AbortError";
-      setActionStatus({
-        type: "error",
-        message: isAbort
-          ? "Copy log timed out."
-          : e instanceof Error
-            ? e.message
-            : "Failed to copy scan log",
-      });
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
   };
 
   return (
     <main className="min-h-screen w-full flex flex-col bg-zinc-950 text-zinc-100">
       <div className="flex-shrink-0 border-b border-zinc-800 bg-zinc-950/95 backdrop-blur-sm">
         <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between border-b border-zinc-800 py-3 sm:py-4">
-            <Link
-              href="/"
-              className="flex items-center gap-3 sm:gap-4 hover:opacity-80 transition-opacity cursor-pointer"
-            >
-              <div className="flex h-10 w-10 sm:h-12 sm:w-12 items-center justify-center rounded-md border border-emerald-800 bg-emerald-950/40">
-                <Shield className="h-5 w-5 sm:h-6 sm:w-6 text-emerald-300" />
-              </div>
-              <div>
-                <h1 className="text-xl sm:text-3xl font-black tracking-tight text-zinc-100">
-                  Secret Guardian
-                </h1>
-                <p className="text-xs sm:text-sm text-zinc-400">
-                  AI-Powered Secret Detection & Remediation
-                </p>
-              </div>
-            </Link>
-
-            <div className="hidden lg:flex items-center gap-2">
-              <div className="inline-flex items-center gap-1.5 rounded-md border border-emerald-800 bg-emerald-950/40 px-3 py-1.5">
-                <ShieldCheck className="h-3.5 w-3.5 text-emerald-300" />
-                <span className="text-[11px] font-mono uppercase text-emerald-300">
-                  Read-Only
-                </span>
-              </div>
-              <div className="inline-flex items-center gap-1.5 rounded-md border border-emerald-800 bg-emerald-950/30 px-3 py-1.5">
-                <Lock className="h-3.5 w-3.5 text-emerald-300" />
-                <span className="text-[11px] font-mono uppercase text-emerald-300">
-                  No Data Stored
-                </span>
-              </div>
-              <div className="inline-flex items-center gap-1.5 rounded-md border border-orange-800 bg-orange-950/30 px-3 py-1.5">
-                <Zap className="h-3.5 w-3.5 text-orange-300" />
-                <span className="text-[11px] font-mono uppercase text-orange-300">
-                  AI-Powered
-                </span>
-              </div>
-            </div>
-          </div>
+          <ScanPageHeader />
 
           <div className="py-4 sm:py-6">
-            <div className="mb-4 flex max-w-sm rounded-md border border-zinc-800 bg-zinc-900 p-1">
-              <button
-                onClick={() => {
-                  cancelScan();
-                  setScanMode("url");
-                  setError("");
-                  setActionStatus(null);
-                }}
-                className={`focus-ring flex-1 flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors ${scanMode === "url" ? "border border-zinc-700 bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:text-zinc-100"}`}
-                aria-label="Switch to repository URL scan"
-              >
-                <Github className="h-4 w-4" />
-                <span>Repository URL</span>
-              </button>
-              <button
-                onClick={() => {
-                  cancelScan();
-                  setScanMode("upload");
-                  setError("");
-                  setActionStatus(null);
-                }}
-                className={`focus-ring flex-1 flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors ${scanMode === "upload" ? "border border-zinc-700 bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:text-zinc-100"}`}
-                aria-label="Switch to ZIP upload scan"
-              >
-                <Upload className="h-4 w-4" />
-                <span>Upload ZIP</span>
-              </button>
-            </div>
+            <ScanModeToggle scanMode={scanMode} onSwitch={switchScanMode} />
 
             {scanMode === "url" && (
-              <>
-                <div className="flex flex-col sm:flex-row gap-3">
-                  <div className="relative flex-1">
-                    <div className="absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none">
-                      <Github className="h-5 w-5 text-zinc-500" />
-                    </div>
-                    <Input
-                      type="url"
-                      placeholder={isFocused ? "https://github.com/owner/repo" : (placeholderText || "https://github.com/owner/repo")}
-                      value={repoUrl}
-                      onChange={(e) => setRepoUrl(e.target.value)}
-                      className="h-12 rounded-md border-zinc-800 pl-12 text-base font-mono focus:border-orange-500 focus:ring-orange-500 sm:h-14"
-                      disabled={loading}
-                      onKeyDown={(e) =>
-                        e.key === "Enter" && !loading && handleUrlScanClick()
-                      }
-                      onFocus={() => setIsFocused(true)}
-                      onBlur={() => setIsFocused(false)}
-                    />
-                  </div>
-                  <Button
-                    type="button"
-                    onClick={handleUrlScanClick}
-                    disabled={loading}
-                    className="h-12 rounded-md border border-zinc-700 bg-zinc-900 px-8 font-mono text-xs tracking-wide hover:border-orange-500 hover:bg-zinc-800 sm:h-14"
-                  >
-                    {loading ? (
-                      <span className="inline-flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>Scanning...</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-2">
-                        <Search className="h-4 w-4" />
-                        <span>Scan Repository</span>
-                      </span>
-                    )}
-                  </Button>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-zinc-400">
-                  <span>Try a sample:</span>
-                  <button
-                    className="focus-ring font-mono font-medium text-orange-300 underline decoration-zinc-600 underline-offset-2 transition-colors hover:text-orange-200 hover:decoration-orange-400"
-                    onClick={() =>
-                      setRepoUrl(
-                        "https://github.com/shriyamchandra/Book-Store-Management-Capstone-Project"
-                      )
-                    }
-                  >
-                    Book-Store-Management
-                  </button>
-                </div>
-              </>
+              <UrlScanForm
+                repoUrl={repoUrl}
+                setRepoUrl={setRepoUrl}
+                isFocused={isFocused}
+                setIsFocused={setIsFocused}
+                placeholderText={placeholderText}
+                loading={loading}
+                onScan={handleUrlScanClick}
+              />
             )}
 
             {scanMode === "upload" && (
-              <>
-                <div
-                  onDragEnter={handleDrag}
-                  onDragLeave={handleDrag}
-                  onDragOver={handleDrag}
-                  onDrop={handleDrop}
-                  className={`relative rounded-xl border-2 border-dashed p-10 text-center transition-all duration-300 ${
-                    dragActive
-                      ? "border-orange-500 bg-orange-950/30 ring-4 ring-orange-500/10 scale-[0.99]"
-                      : uploadedFile
-                      ? "border-emerald-600 bg-emerald-950/20"
-                      : "border-zinc-800 bg-zinc-900/40 hover:border-orange-500/40 hover:bg-zinc-900/60"
-                  }`}
-                >
-                  {uploadedFile ? (
-                    <div className="flex flex-col items-center">
-                      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-md border border-emerald-800 bg-emerald-950/50">
-                        <FolderArchive className="h-7 w-7 text-emerald-300" />
-                      </div>
-                      <p className="mb-1 text-sm font-mono text-zinc-100">
-                        {uploadedFile.name}
-                      </p>
-                      <p className="mb-3 text-xs font-mono text-zinc-500">
-                        {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB
-                      </p>
-                      <button
-                        onClick={() => setUploadedFile(null)}
-                        className="focus-ring inline-flex items-center gap-1 text-sm text-red-300 transition-colors hover:text-red-200"
-                      >
-                        <X className="h-4 w-4" /> Remove
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center">
-                      <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-md border border-zinc-800 bg-zinc-900">
-                        <Upload className="h-7 w-7 text-zinc-500" />
-                      </div>
-                      <p className="mb-1 text-sm font-medium text-zinc-100">
-                        Drag and drop your ZIP file here
-                      </p>
-                      <p className="mb-3 text-xs text-zinc-500">or click to browse</p>
-                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-mono text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-800">
-                        <FolderArchive className="h-4 w-4" /> Browse Files
-                        <input
-                          type="file"
-                          accept=".zip"
-                          onChange={handleFileSelect}
-                          className="hidden"
-                        />
-                      </label>
-                    </div>
-                  )}
-                </div>
-                <div className="mt-4">
-                  <Button
-                    type="button"
-                    onClick={handleUploadScanClick}
-                    disabled={loading || !uploadedFile}
-                    className="h-12 w-full rounded-md border border-zinc-700 bg-zinc-900 px-8 font-mono text-xs tracking-wide hover:border-orange-500 hover:bg-zinc-800 sm:h-14 sm:w-auto"
-                  >
-                    {loading ? (
-                      <span className="inline-flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>Scanning...</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-2">
-                        <Search className="h-4 w-4" />
-                        <span>Scan ZIP File</span>
-                      </span>
-                    )}
-                  </Button>
-                </div>
-              </>
+              <ZipUploadForm
+                uploadedFile={uploadedFile}
+                onClearFile={() => setUploadedFile(null)}
+                dragActive={dragActive}
+                handleDrag={handleDrag}
+                handleDrop={handleDrop}
+                handleFileSelect={handleFileSelect}
+                loading={loading}
+                onScan={handleUploadScanClick}
+              />
             )}
 
-            <div className="mt-3 min-h-[1.5rem]">
-              {!error && !loading && (
-                <p
-                  className={`text-sm font-medium leading-6 break-words transition-colors duration-200 ${error ? "text-red-300" : loading ? "text-orange-300 animate-pulse" : scanResult?.has_critical || scanResult?.has_high ? "text-red-300" : "text-zinc-400"}`}
-                >
-                  {headerSubtitle}
-                </p>
-              )}
-              <p className="sr-only" aria-live="polite">
-                {loading ? (progress || "Scanning...") : headerSubtitle}
-              </p>
-              <ActionStatusBanner
-                status={actionStatus}
-                onDismiss={() => setActionStatus(null)}
-              />
-            </div>
-
-            <div
-              className={`mt-4 rounded-md border p-4 ${scanStatusMeta.tone}`}
-              role="status"
-              aria-live="polite"
-            >
-              <div className="flex items-start gap-3">
-                {loading ? (
-                  <Loader2 className="mt-0.5 h-5 w-5 flex-shrink-0 animate-spin" />
-                ) : scanResult && totalFindings === 0 ? (
-                  <ShieldCheck className="mt-0.5 h-5 w-5 flex-shrink-0" />
-                ) : scanResult && (scanResult.has_critical || scanResult.has_high) ? (
-                  <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0" />
-                ) : (
-                  <Filter className="mt-0.5 h-5 w-5 flex-shrink-0" />
-                )}
-                <div>
-                  <p className="text-sm font-semibold">{scanStatusMeta.title}</p>
-                  <p className="mt-1 text-sm opacity-90">{scanStatusMeta.message}</p>
-                </div>
-              </div>
-            </div>
+            <ScanStatusPanel
+              error={error}
+              loading={loading}
+              progress={progress}
+              headerSubtitle={headerSubtitle}
+              actionStatus={actionStatus}
+              onDismissStatus={() => setActionStatus(null)}
+              scanStatusMeta={scanStatusMeta}
+              scanResult={scanResult}
+              totalFindings={totalFindings}
+            />
           </div>
         </div>
       </div>
@@ -1050,22 +336,24 @@ export default function ScanPage() {
                   <div className="flex items-center gap-2 mb-2">
                     <Lock className="h-4 w-4 text-orange-300 transition-transform duration-200 group-hover:scale-105" />
                     <span className="text-sm font-semibold text-zinc-100">
-                      Secrets Masked
+                      {/* Secrets Masked */}
+                      Raw Debug Values
                     </span>
                   </div>
                   <p className="text-xs text-zinc-500">
-                    All detected secrets are masked by default for safety.
+                    {/* All detected secrets are masked by default for safety. */}
+                    Detected secrets are shown raw for debugging.
                   </p>
                 </div>
                 <div className="group interactive-card rounded-md border border-zinc-800 bg-zinc-900/50 p-4">
                   <div className="flex items-center gap-2 mb-2">
                     <ShieldCheck className="h-4 w-4 text-emerald-300 transition-transform duration-200 group-hover:scale-105" />
                     <span className="text-sm font-semibold text-zinc-100">
-                      No Storage
+                      In-Memory Cache
                     </span>
                   </div>
                   <p className="text-xs text-zinc-500">
-                    Temporary scan only. No data is stored after analysis.
+                    Results cached in-memory and cleared on expiration.
                   </p>
                 </div>
                 <div className="group interactive-card rounded-md border border-zinc-800 bg-zinc-900/50 p-4">
@@ -1192,9 +480,11 @@ export default function ScanPage() {
             </div>
           )}
 
-          {totalFindings > 0 && (
-            <div className="space-y-4">
-              <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          {scanResult && (
+            <div className="space-y-6">
+              {totalFindings > 0 && (
+                <div className="space-y-4">
+                  <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <h2 className="text-2xl font-bold text-zinc-100">
                   Master Incidents
                 </h2>
@@ -1330,7 +620,7 @@ export default function ScanPage() {
                     <Button
                       variant="outline"
                       className="w-full"
-                      onClick={resetFindingControls}
+                      onClick={resetAllFindingControls}
                     >
                       Clear Filters
                     </Button>
@@ -1358,7 +648,7 @@ export default function ScanPage() {
                             key={findingKey}
                             finding={finding}
                             findingKey={findingKey}
-                            isRevealed={revealedSecrets.has(findingKey)}
+                            revealedValue={revealedSecrets[findingKey]}
                             copiedKey={copiedKey}
                             toggleRevealSecret={toggleRevealSecret}
                             copyText={copyText}
@@ -1410,6 +700,18 @@ export default function ScanPage() {
               </div>
             </div>
           )}
+
+            <SuppressedFindingsSection
+              suppressedFindings={suppressedFindings}
+              expanded={showSuppressedSection}
+              onToggleExpanded={() => setShowSuppressedSection((prev) => !prev)}
+              revealedSecrets={revealedSecrets}
+              copiedKey={copiedKey}
+              toggleRevealSecret={toggleRevealSecret}
+              copyText={copyText}
+            />
+          </div>
+        )}
         </div>
       </div>
     </main>
