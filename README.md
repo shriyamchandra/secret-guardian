@@ -222,7 +222,7 @@ Not all secrets are equally dangerous. Secret Guardian analyzes context to provi
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/secret-guardian.git
+git clone https://github.com/shriyamchandra/secret-guardian.git
 cd secret-guardian
 
 # Start everything with one command

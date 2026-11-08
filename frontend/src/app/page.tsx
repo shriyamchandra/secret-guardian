@@ -40,7 +40,7 @@ const TERMINAL_LINES = [
   { delay: 3400, color: "text-orange-400",  text: "[HIGH]     GitHub Token         .env:3" },
   { delay: 3800, color: "text-yellow-400",  text: "[MEDIUM]   Generic API Key      src/services/maps.js:42" },
   { delay: 4300, color: "text-emerald-400", text: "✓ Requesting AI remediation (Gemini)..." },
-  { delay: 4900, color: "text-emerald-300", text: "✓ Scan complete — 3 secrets found in 3 files (~30s avg)" },
+  { delay: 4900, color: "text-emerald-300", text: "✓ Scan complete — 3 secrets found in 3 files" },
   { delay: 5300, color: "text-zinc-500",    text: "  No data stored. Repository deleted from server." },
 ];
 
@@ -383,7 +383,7 @@ const HeroSection = () => (
             {[
               "800+ secret patterns: AWS, GitHub, Stripe, Google, SSH keys…",
               "3 scan engines: regex + Gitleaks + TruffleHog",
-              "Heuristic noise filter cuts false positives by ~90%",
+              "Heuristic noise filter flags likely test and placeholder values",
               "Gemini AI writes framework-specific fix code for every finding",
             ].map((item) => (
               <li key={item} className="flex items-start gap-2">
@@ -456,7 +456,7 @@ function DemoSection() {
               </div>
               <div>
                 <div className="font-semibold text-zinc-100 font-mono text-sm">github.com/acme/backend</div>
-                <div className="text-xs text-zinc-500">312 files · scan duration ~30s avg · 38 false positives filtered</div>
+                <div className="text-xs text-zinc-500">Sample output (illustrative) · 312 files</div>
               </div>
             </div>
             <div className="flex items-center gap-3 flex-wrap">
@@ -473,8 +473,8 @@ function DemoSection() {
                 <div className="text-[11px] text-zinc-500 uppercase tracking-wide">Medium</div>
               </div>
               <div className="text-center">
-                <div className="font-mono text-xl font-bold text-emerald-400">~30s</div>
-                <div className="text-[11px] text-zinc-500 uppercase tracking-wide">Avg Time</div>
+                <div className="font-mono text-xl font-bold text-emerald-400">3</div>
+                <div className="text-[11px] text-zinc-500 uppercase tracking-wide">Findings</div>
               </div>
               <div className="flex gap-2">
                 <button className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200">
@@ -538,10 +538,10 @@ const DETECTION_STEPS = [
   {
     number: "02",
     icon: Cpu,
-    title: "3 Scanners in Parallel",
+    title: "Multi-Scanner Pipeline",
     color: "border-orange-800 text-orange-300",
     accentBg: "bg-orange-950/30",
-    description: "Regex patterns, Gitleaks, and TruffleHog run concurrently. Results are deduplicated.",
+    description: "The built-in regex engine always runs; Gitleaks and TruffleHog join when installed. Results are deduplicated.",
     detail: (
       <div className="mt-3 space-y-1">
         {[
